@@ -25,3 +25,6 @@ One line per note. Read this file at the start of every session.
   or they land beside the target at every range.
 - [jolt-rejects-non-uniform-body-scale.md](jolt-rejects-non-uniform-body-scale.md)
   — squash the MeshInstance3D in death animations, never the physics body.
+- [github-pages-web-export-config.md](github-pages-web-export-config.md) —
+  export_presets.cfg + the deploy-pages.yml workflow are already set up; how
+  to flip on Pages and where the live link is.
