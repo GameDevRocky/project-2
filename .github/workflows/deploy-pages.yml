@@ -23,7 +23,14 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  # The GitHub release tag (used in download URLs) spells this with a
+  # hyphen. Godot itself expects a dot before "stable" for the folder it
+  # looks for templates in on disk — confirmed by the mismatch this bug
+  # caused on 2026-09-25: templates downloaded fine but landed in
+  # export_templates/4.7.2-stable/ while Godot looked in
+  # export_templates/4.7.2.stable/ and reported "no export template found."
   GODOT_VERSION: 4.7.2-stable
+  GODOT_TEMPLATE_VERSION: 4.7.2.stable
 
 jobs:
   build:
@@ -42,9 +49,10 @@ jobs:
       - name: Download the Web export templates
         run: |
           wget "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}/Godot_v${GODOT_VERSION}_export_templates.tpz"
-          mkdir -p "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}"
+          mkdir -p "$HOME/.local/share/godot/export_templates/${GODOT_TEMPLATE_VERSION}"
           unzip "Godot_v${GODOT_VERSION}_export_templates.tpz" -d /tmp/templates
-          mv /tmp/templates/templates/* "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}/"
+          mv /tmp/templates/templates/* "$HOME/.local/share/godot/export_templates/${GODOT_TEMPLATE_VERSION}/"
+          ls "$HOME/.local/share/godot/export_templates/${GODOT_TEMPLATE_VERSION}/" | grep web
 
       - name: Export the Web build
         run: |

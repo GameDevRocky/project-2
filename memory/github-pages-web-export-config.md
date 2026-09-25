@@ -30,6 +30,23 @@ manually re-exporting every time. `export_presets.cfg` alone is not enough —
 Godot won't export anything unless it exists, but nothing publishes it
 automatically without the workflow.
 
+The first run of this workflow (2026-09-25) failed with "No export template
+found... web_nothreads_debug.zip / web_nothreads_release.zip". The download
+and the template zip's contents were both fine — verified by hand against
+the actual `.tpz` archive. The bug was a version-string mismatch: GitHub's
+release tag spells it `4.7.2-stable` (hyphen), but Godot's on-disk template
+folder wants `4.7.2.stable` (dot before "stable") — same as the folder this
+machine already had at
+`AppData\Roaming\Godot\export_templates\4.7.2.stable\`. The workflow reused
+the hyphenated tag name for the folder it copied templates into, so Godot
+looked in the wrong place. Fixed by splitting the workflow's `env:` into
+`GODOT_VERSION` (hyphen, for download URLs) and `GODOT_TEMPLATE_VERSION`
+(dot, for the on-disk template path), plus a `ls ... | grep web` line after
+the copy so a future run's log proves the files landed before the export
+step runs. Don't assume this version string is the same in both places
+again — always look at the actual expected path in a Godot error message
+before renaming.
+
 How to apply: if the site 404s after a push, check the Actions tab first —
 the export step needs the Pages source set to "GitHub Actions" (step 1
 above) or it has nowhere to deploy to. If glow/bloom effects (see
