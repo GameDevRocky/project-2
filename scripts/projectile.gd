@@ -117,11 +117,18 @@ func _ready() -> void:
 	mat.albedo_color = color
 	# An emission makes the material give off its own light-like glow, so the
 	# glob stays readable even in shadow. It does not actually light the world.
+	#
+	# The glob used to be UNSHADED as well. Unshaded draws the plain albedo
+	# colour and nothing else - Godot skips emission entirely in that mode - so
+	# the glow set here was never actually drawn. Leaving the glob lit lets the
+	# emission through: strong enough to push it past the arena's glow
+	# threshold, so incoming paint carries a halo you can track and dodge.
 	mat.emission_enabled = true
 	mat.emission = color
-	mat.emission_energy_multiplier = 0.8
-	# Unshaded ignores scene lighting entirely - the glob is always full colour.
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.emission_energy_multiplier = 1.8
+	# Ignore the arena's distance haze, so a glob fired from across the room is
+	# as crisp as one fired from next to you.
+	mat.disable_fog = true
 	mesh_node.material_override = mat
 
 	add_child(mesh_node)
@@ -236,6 +243,9 @@ func _spawn_splat(at: Vector3) -> void:
 	# Transparency has to be switched on explicitly before an alpha value in
 	# albedo_color will do anything at all.
 	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	# Fog on a see-through material still tints it even as it fades out, which
+	# would leave a faint lavender ghost where the splat was. Paint stays paint.
+	mat.disable_fog = true
 	splat.material_override = mat
 
 	# Add the splat to the level rather than to this glob - this glob is about
@@ -273,6 +283,7 @@ func _spawn_burst(at: Vector3) -> void:
 	# Drawing only the inside faces of the sphere makes it read as a soft cloud
 	# you are looking into, rather than a hard opaque ball blocking your view.
 	mat.cull_mode = BaseMaterial3D.CULL_FRONT
+	mat.disable_fog = true
 	ring.material_override = mat
 
 	get_parent().add_child(ring)

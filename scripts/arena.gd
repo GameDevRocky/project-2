@@ -33,8 +33,6 @@ extends Node3D
 ## "unfair" - dying should teach you the room, and a room reshuffled every run
 ## teaches you nothing.
 
-const Traits = preload("res://scripts/traits.gd")
-
 ## Half the width of the playable floor, in metres. The floor runs from
 ## -ARENA_HALF to +ARENA_HALF on both axes, so the arena is 46m square.
 const ARENA_HALF := 23.0
@@ -46,6 +44,34 @@ const WALL_HEIGHT := 9.0
 ## How thick the boundary walls are. Deliberately chunky - thin walls are what
 ## fast projectiles slip through, and thickness costs nothing here.
 const WALL_THICKNESS := 2.0
+
+
+# --- The environment palette ------------------------------------------------
+# The rule behind these colours: the ROOM sits in the middle of the brightness
+# range with soft, dusty colour, so that everything you have to react to -
+# enemies, cores, paint - can sit above it (brighter, more saturated, glowing)
+# or, for the charcoal Monolith, clearly below it. The first version used a
+# near-white floor and the exact same pink/mint/teal as the enemies, so a pink
+# Sprayer in front of a pink block, or a white Ghost on the white floor, simply
+# disappeared.
+
+## Warm primed-canvas grey. Light enough to feel like a gallery floor, dark
+## enough that it never blows out to white under the sun.
+const FLOOR_COLOR := Color("#C4BCB3")
+
+## Dusty violet. A mid-tone frame around the room, deliberately lighter than
+## the charcoal Monolith and darker than the pastel enemies, so both read
+## against it.
+const WALL_COLOR := Color("#6C6592")
+
+## Muted "room" versions of the GDD palette, used only for cover. Same hue
+## family as the enemy colours, but dustier and darker, so the arena still
+## looks pastel without ever matching an enemy exactly.
+const COVER_SLATE := Color("#5A5578")
+const COVER_ROSE := Color("#C4899B")
+const COVER_SAGE := Color("#84B895")
+const COVER_TEAL := Color("#3F8886")
+const COVER_PALE := Color("#CBC2D6")
 
 
 ## The cover pieces, as a plain list. Each entry is where it sits, how big it
@@ -90,13 +116,14 @@ func _build_environment() -> void:
 	var env := Environment.new()
 
 	# A procedural sky, tinted to the GDD's pastel direction rather than the
-	# default blue. This is also the main source of ambient light below, so its
-	# colours quietly tint everything in the arena.
+	# default blue. It is only the backdrop you see over the walls - the
+	# ambient light below comes from a fixed colour instead - so it can stay
+	# pastel without flooding every shadow in the arena with light.
 	var sky_material := ProceduralSkyMaterial.new()
-	sky_material.sky_top_color = Color("#BFE9E4")
-	sky_material.sky_horizon_color = Color("#FFEFF3")
+	sky_material.sky_top_color = Color("#8FC9CF")
+	sky_material.sky_horizon_color = Color("#F1D9E3")
 	sky_material.ground_bottom_color = Color("#E9E4F0")
-	sky_material.ground_horizon_color = Color("#FFEFF3")
+	sky_material.ground_horizon_color = Color("#F1D9E3")
 	# A soft, wide sun disc rather than a hard point, which suits the
 	# "soft-edged geometric shadows" the art direction asks for.
 	sky_material.sun_angle_max = 24.0
@@ -108,29 +135,54 @@ func _build_environment() -> void:
 	env.background_mode = Environment.BG_SKY
 
 	# Ambient light is the fill light that stops shadows being pure black.
-	# Sourcing it from the sky means the pastel sky colours bounce into every
-	# shadow, which is what keeps the whole scene reading as bright and clean
-	# instead of high-contrast and harsh.
-	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
-	env.ambient_light_sky_contribution = 1.0
-	env.ambient_light_energy = 1.15
+	#
+	# It used to come from the sky. The pale sky poured so much light into
+	# every shadow that the arena had almost no shading at all - nothing had a
+	# lit side and a dark side, so nothing had shape. A fixed, soft lavender
+	# fill is dimmer and fully under our control: shadows now read as cool
+	# pastel shade rather than grey, which keeps the stylised look while
+	# giving every box a readable light side and dark side.
+	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+	env.ambient_light_color = Color("#B3AED6")
+	env.ambient_light_energy = 0.6
+	# 0 = "none of the ambient comes from the sky". Only matters if the source
+	# above is ever switched back to the sky, but it keeps intent obvious.
+	env.ambient_light_sky_contribution = 0.0
 
 	# Glow makes bright things bleed light into their surroundings. The paint
 	# globs, the enemy bodies and the dropped cores all use emissive materials,
-	# so this is what actually makes them glow rather than just look brightly
-	# coloured - it is the single biggest visual win in the whole project.
+	# so this is what makes them glow rather than just look brightly coloured.
+	#
+	# The rule is that ONLY gameplay objects glow. The room is lit to stay
+	# below the threshold, and bloom - which makes glow spill out of areas
+	# darker than the threshold too - is off, because it was hazing the whole
+	# screen and washing out exactly the things glow is meant to pick out.
 	env.glow_enabled = true
-	env.glow_intensity = 0.55
-	env.glow_bloom = 0.15
-	# Only things brighter than this threshold bloom, so the white floor does
-	# not smear the entire screen.
+	env.glow_intensity = 0.8
+	env.glow_bloom = 0.0
 	env.glow_hdr_threshold = 1.0
 
 	# Tonemapping maps the renderer's internal brightness range onto what a
-	# monitor can actually show. FILMIC rolls highlights off gently instead of
-	# clipping them to flat white, which matters a lot in a mostly-white arena.
+	# monitor can actually show. FILMIC rolls highlights off gently.
+	#
+	# tonemap_white is the brightness that counts as "pure white". It was 1.0,
+	# which meant the sunlit floor - lit well past 1.0 - clipped to flat white,
+	# and every pastel enemy standing on it clipped toward white with it. At
+	# 3.0 the room lands in the middle of the range, and the top of the range
+	# is left free for the things that glow.
 	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
 	env.tonemap_exposure = 1.0
+	env.tonemap_white = 3.0
+
+	# A light pastel haze that gets thicker with distance. The far walls fade
+	# slightly toward lavender, which gives the room depth. Enemies, cores and
+	# paint switch fog off on their own materials, so they stay crisp at any
+	# range and stand out against the hazier room behind them.
+	env.fog_enabled = true
+	env.fog_light_color = Color("#C9C0DE")
+	env.fog_density = 0.007
+	# Leave the sky alone - it already has its own colours.
+	env.fog_sky_affect = 0.0
 
 	world.environment = env
 	add_child(world)
@@ -143,10 +195,25 @@ func _build_light() -> void:
 	# Angled down and across rather than straight overhead, so the pillars throw
 	# long readable shadows and the geometry has some shape to it.
 	sun.rotation_degrees = Vector3(-52.0, -47.0, 0.0)
-	sun.light_energy = 1.25
-	# A faintly warm sun against the cool sky, which is what gives the pastel
-	# palette its depth.
-	sun.light_color = Color("#FFF6EC")
+	sun.light_energy = 1.0
+
+	# The browser build runs on Godot's Compatibility renderer, not the
+	# desktop Forward+ one. Measured on this exact scene in Godot 4.7.2, the
+	# Compatibility renderer draws a SHADOW-CASTING sun far brighter than
+	# Forward+ does at the same energy - about 2.7x on the floor - while with
+	# shadows off the two match pixel for pixel. Left alone, the web version
+	# washes straight back out. 0.25 was picked by comparing screenshots from
+	# both renderers until the sunlit floor matched.
+	#
+	# This asks which renderer is running rather than which platform, because
+	# a desktop with an old graphics card can fall back to Compatibility too.
+	if RenderingServer.get_current_rendering_method() == "gl_compatibility":
+		sun.light_energy = 0.25
+	# A warm sun against the cool lavender fill. Warm light and cool shade is
+	# the classic painter's trick for depth: lit faces and shaded faces differ
+	# in colour as well as brightness, so shapes read clearly without the
+	# shadows having to go dark and muddy.
+	sun.light_color = Color("#FFEEDB")
 
 	sun.shadow_enabled = true
 	# A small bias nudges shadows away from the surface casting them, which
@@ -167,14 +234,14 @@ func _build_floor() -> void:
 	_add_solid(
 		Vector3(0.0, -0.5, 0.0),
 		Vector3(ARENA_HALF * 2.0, 1.0, ARENA_HALF * 2.0),
-		Color("#FBFBFD"),
+		FLOOR_COLOR,
 		0.95)
 
 
 func _build_walls() -> void:
 	var span: float = ARENA_HALF * 2.0
 	var offset: float = ARENA_HALF + WALL_THICKNESS * 0.5
-	var wall_color := Color("#3A3D57")
+	var wall_color := WALL_COLOR
 
 	# North and south.
 	_add_solid(Vector3(0.0, WALL_HEIGHT * 0.5, -offset),
@@ -206,20 +273,25 @@ func _build_cover() -> void:
 
 
 ## Turns the colour names used in the COVER table into real colours.
+##
+## The names still say "pink", "mint" and so on, but they now map to the
+## muted room versions above rather than the exact Traits colours. Those exact
+## colours belong to the enemies and their cores; cover sharing them is what
+## made enemies vanish against it.
 func _palette(name: String) -> Color:
 	match name:
 		"charcoal":
-			return Traits.CHARCOAL
+			return COVER_SLATE
 		"pink":
-			return Traits.PINK
+			return COVER_ROSE
 		"mint":
-			return Traits.MINT
+			return COVER_SAGE
 		"teal":
-			return Traits.TEAL
+			return COVER_TEAL
 		"pale":
-			return Color("#F0EAF6")
+			return COVER_PALE
 		_:
-			return Traits.WHITE
+			return FLOOR_COLOR
 
 
 ## Builds one solid box: a StaticBody3D with a matching collision shape and,

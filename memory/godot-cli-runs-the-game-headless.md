@@ -16,6 +16,20 @@ Two commands cover most testing:
 Filter the output through `grep -viE "MCP|bridge|websocket|listening"` to drop
 the game-bridge autoload's startup chatter.
 
+From WSL (the checkout at `/home/jlion/projects/project-2`), the same Windows
+exe runs fine as
+`/mnt/c/Users/jlion/Downloads/Godot_v4.7.2-stable_win64.exe/Godot_v4.7.2-stable_win64_console.exe`,
+but every path handed to it must be a Windows path: use
+`--path "$(wslpath -w /home/jlion/projects/project-2)"`. A fresh clone has no
+`.godot/` folder, so run `--headless --import` once first.
+
+Headless runs render nothing. To judge a VISUAL change, run windowed with a
+throwaway `extends SceneTree` script (`--script`) that loads
+`res://scenes/main.tscn`, sets `_run_over = true` on it so no wave starts, places
+the camera, waits for `RenderingServer.frame_post_draw`, and saves
+`root.get_texture().get_image()` as a PNG. A game window pops up for a few
+seconds while it runs.
+
 Why: On 2026-09-23 I twice shipped Jarman code I had not run, saying only that
 the Godot MCP tools were missing. The second time he hit a parser error on the
 first launch. The MCP tools really are missing, but that was never a reason not

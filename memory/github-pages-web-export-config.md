@@ -49,7 +49,11 @@ before renaming.
 
 How to apply: if the site 404s after a push, check the Actions tab first —
 the export step needs the Pages source set to "GitHub Actions" (step 1
-above) or it has nowhere to deploy to. If glow/bloom effects (see
-[[jolt-rejects-non-uniform-body-scale]] for another renderer-specific gotcha)
-look flat in the browser, that's expected: Web export uses the Compatibility
-renderer, not Forward+, and Compatibility does not do glow.
+above) or it has nowhere to deploy to. Web export uses the Compatibility
+renderer, not Forward+. Compatibility DOES do glow in 4.7.2 (this note used to
+say it did not - checked against the 4.7.2 class reference on 2026-09-27), but a
+simpler version: `glow_levels/*`, `glow_strength`, `glow_mix` and
+`glow_blend_mode` are ignored and it always blends as SCREEN. It also lights a
+shadow-casting sun much brighter than Forward+ - see
+[[compatibility-renderer-brightens-shadowed-sun]]. For another
+renderer-specific gotcha see [[jolt-rejects-non-uniform-body-scale]].

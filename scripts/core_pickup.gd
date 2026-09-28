@@ -69,6 +69,9 @@ func _build_visuals() -> void:
 	# entire job of a pickup in a game this busy.
 	mat.emission_energy_multiplier = 1.6
 	mat.roughness = 0.4
+	# Ignore the arena's distance haze, so a core across the room keeps its
+	# full colour - that colour is how you know what is on offer.
+	mat.disable_fog = true
 	_mesh.material_override = mat
 	add_child(_mesh)
 
@@ -88,6 +91,7 @@ func _build_visuals() -> void:
 	halo_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	halo_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	halo_mat.cull_mode = BaseMaterial3D.CULL_FRONT
+	halo_mat.disable_fog = true
 	_halo.material_override = halo_mat
 	add_child(_halo)
 
