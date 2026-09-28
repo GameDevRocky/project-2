@@ -10,7 +10,8 @@ One line per note. Read this file at the start of every session.
   always loses.
 - [godot-cli-runs-the-game-headless.md](godot-cli-runs-the-game-headless.md) —
   where the Godot 4.7.2 exe is and the two commands that parse-check a script
-  and run the game headless, so changes get tested without the MCP tools.
+  and run the game headless, so changes get tested without the MCP tools; also
+  how to call it from WSL and how to take screenshots for visual changes.
 - [gdscript-colon-equals-needs-a-known-type.md](gdscript-colon-equals-needs-a-known-type.md)
   — `:=` errors on a property one script added to another; write `: float` etc.
   by hand instead.
@@ -27,4 +28,8 @@ One line per note. Read this file at the start of every session.
   — squash the MeshInstance3D in death animations, never the physics body.
 - [github-pages-web-export-config.md](github-pages-web-export-config.md) —
   export_presets.cfg + the deploy-pages.yml workflow are already set up; how
-  to flip on Pages and where the live link is.
+  to flip on Pages and where the live link is; the web build's renderer DOES
+  do glow (simplified).
+- [compatibility-renderer-brightens-shadowed-sun.md](compatibility-renderer-brightens-shadowed-sun.md)
+  — the web renderer draws a shadow-casting sun ~2.7x brighter than desktop;
+  arena.gd lowers it to 0.25 there; check both renderers after lighting changes.

@@ -211,6 +211,13 @@ var _mesh: MeshInstance3D
 var _health_bar: MeshInstance3D
 var _health_bar_bg: MeshInstance3D
 
+## How strongly the body glows in its own colour when nothing is happening.
+## The hit/fire flash spikes above this and settles back to it. High enough
+## that a pastel enemy sits clearly brighter than the room behind it and picks
+## up a little glow; the charcoal Monolith instead reads by being the darkest
+## thing in the arena.
+const BASE_EMISSION := 0.6
+
 
 ## Called by game.gd before this enemy enters the scene.
 ## `health_scale` is the per-wave difficulty ramp - later waves hand in a bigger
@@ -293,11 +300,14 @@ func _build_mesh() -> void:
 	mat.albedo_color = stats["color"]
 	mat.roughness = 0.85
 	mat.metallic = 0.0
-	# A faint glow of its own colour, so a white Ghost still reads against the
-	# white floor and walls.
+	# A glow of its own colour, so the body is always a step brighter than the
+	# room it is standing in.
 	mat.emission_enabled = true
 	mat.emission = stats["color"]
-	mat.emission_energy_multiplier = 0.35
+	mat.emission_energy_multiplier = BASE_EMISSION
+	# Ignore the arena's distance haze. The room fades with distance; the
+	# thing trying to kill you should not.
+	mat.disable_fog = true
 	_mesh.material_override = mat
 
 	add_child(_mesh)
@@ -339,6 +349,8 @@ func _make_bar_quad(bar_color: Color, width: float) -> MeshInstance3D:
 	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 	# Draw on top of the world so the bar is never buried inside the enemy mesh.
 	mat.no_depth_test = true
+	# Keep the bar's colours exact at range rather than tinted by the haze.
+	mat.disable_fog = true
 	node.material_override = mat
 
 	return node
@@ -586,7 +598,7 @@ func _flash() -> void:
 	var mat = _mesh.material_override
 	mat.emission_energy_multiplier = 2.2
 	var tween := create_tween()
-	tween.tween_property(mat, "emission_energy_multiplier", 0.35, 0.18)
+	tween.tween_property(mat, "emission_energy_multiplier", BASE_EMISSION, 0.18)
 
 
 func _die() -> void:

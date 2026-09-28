@@ -249,6 +249,13 @@ func _build_view_model() -> void:
 	# possible readout of "what am I right now", sitting in the middle of the
 	# screen where you are already looking.
 	_muzzle = _make_box(Vector3(0.12, 0.13, 0.16), Vector3(0.0, 0.0, -0.36), Traits.WHITE)
+	# A soft glow in the pair's colour, so the brush head stays a clear, bright
+	# swatch whichever way you are facing the sun. _apply_pair() keeps the glow
+	# colour in step with the paint colour.
+	var muzzle_mat: StandardMaterial3D = _muzzle.material_override
+	muzzle_mat.emission_enabled = true
+	muzzle_mat.emission = Traits.WHITE
+	muzzle_mat.emission_energy_multiplier = 0.5
 	_view_model.add_child(_muzzle)
 
 
@@ -546,6 +553,7 @@ func _apply_pair(id: String) -> void:
 	if _muzzle != null:
 		var mat = _muzzle.material_override
 		mat.albedo_color = pair["color"]
+		mat.emission = pair["color"]
 
 
 # ============================================================================
