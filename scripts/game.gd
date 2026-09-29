@@ -37,6 +37,8 @@ const PlayerScript = preload("res://scripts/player.gd")
 const EnemyScript = preload("res://scripts/enemy.gd")
 const ArenaScript = preload("res://scripts/arena.gd")
 const HudScript = preload("res://scripts/hud.gd")
+const HealingStationScene = preload("res://scenes/healing_station.tscn")
+const TDMControllerScript = preload("res://scripts/tdm_match_controller.gd")
 
 
 ## The whole difficulty curve, as one readable table.
@@ -94,6 +96,11 @@ var _offered_core = null
 ## prints what it is doing to the console, which is the only way to see what a
 ## headless test run actually did.
 var _verbose: bool = false
+var session_team: String = "BLUE"
+var customization: Dictionary = {}
+var session_mouse_sensitivity: float = 0.0022
+var game_mode := "SURVIVAL"
+var lobby_players: Array[Dictionary] = []
 
 
 func _ready() -> void:
@@ -110,6 +117,14 @@ func _ready() -> void:
 
 	_build_arena()
 	_build_player()
+	_build_healing_station()
+	if game_mode == "TEAM_DEATH_MATCH":
+		var controller := Node.new()
+		controller.name = "TDMMatchController"
+		controller.set_script(TDMControllerScript)
+		add_child(controller)
+		controller.start_match(self, _player, lobby_players, session_team)
+		return
 	_build_hud()
 
 	# Wait one frame before starting. _ready() runs while nodes are still being
@@ -196,13 +211,33 @@ func _build_player() -> void:
 	_player = CharacterBody3D.new()
 	_player.set_script(PlayerScript)
 	_player.name = "Player"
+	_player.customization = customization
+	_player.mouse_sensitivity = session_mouse_sensitivity
+	if game_mode == "TEAM_DEATH_MATCH":
+		_player.tdm_team = session_team
 	add_child(_player)
 	# Start on the centre platform, which is 0.8m tall - so spawn just above it.
-	_player.global_position = Vector3(0.0, 1.2, 0.0)
+	_player.global_position = Vector3(-34.0 if session_team == "RED" else 34.0, 1.2, 0.0)
 
 	# Listen for the player's death. A signal connection is how this script
 	# finds out without having to check the player's health every frame.
-	_player.died.connect(_on_player_died)
+	if game_mode == "SURVIVAL":
+		_player.died.connect(_on_player_died)
+
+
+## Instantiate the reusable station at each protected but contestable location.
+func _build_healing_station() -> void:
+	var station_positions := [
+		Vector3(-28.0, 0.0, -28.0), # NW small building, ground floor.
+		Vector3(33.0, 0.0, -31.0), # NE building, east room.
+		Vector3(-29.0, 3.4, 23.0), # SW building, raised floor.
+		Vector3(5.0, -2.4, 29.0), # Recessed southern route.
+	]
+	for index in station_positions.size():
+		var station := HealingStationScene.instantiate()
+		station.name = "HealingStation%d" % (index + 1)
+		add_child(station)
+		station.global_position = station_positions[index]
 
 
 func _build_hud() -> void:
@@ -302,17 +337,28 @@ func _pick_spawn_point() -> Vector3:
 	if _player != null and is_instance_valid(_player):
 		player_position = _player.global_position
 
-	var radius: float = 19.0
+	var radius: float = 36.0
 
 	# Try several random spots and take the first one far enough away.
 	for attempt in 12:
 		var angle: float = randf() * TAU
 		var candidate := Vector3(sin(angle) * radius, 0.6, cos(angle) * radius)
-		if candidate.distance_to(player_position) > 13.0:
+		if (candidate.distance_to(player_position) > 13.0
+				and _arena.is_enemy_spawn_point_clear(candidate)):
 			return candidate
 
-	# If twelve tries all failed - which needs the player to be standing in a
-	# very odd spot - fall back to the point directly opposite them. Always
+	# If random attempts land inside the map's blocked footprints, scan the same
+	# ring at fixed intervals before using the legacy opposite-player fallback.
+	for index in 36:
+		var fallback_angle := TAU * float(index) / 36.0
+		var fallback_candidate := Vector3(
+			sin(fallback_angle) * radius, 0.6, cos(fallback_angle) * radius)
+		if (fallback_candidate.distance_to(player_position) > 13.0
+				and _arena.is_enemy_spawn_point_clear(fallback_candidate)):
+			return fallback_candidate
+
+	# If random and fixed ring scans fail - which needs an unusually blocked or
+	# constrained player position - fall back to the point directly opposite them. Always
 	# returning SOMETHING matters more than returning the perfect spot: a spawn
 	# function that can fail is a wave that can hang forever.
 	var away: Vector3 = -player_position.normalized() * radius
@@ -365,6 +411,8 @@ func _on_wave_cleared() -> void:
 # ============================================================================
 
 func _process(_delta: float) -> void:
+	if game_mode != "SURVIVAL":
+		return
 	if _run_over:
 		# Allow a restart from the end screen.
 		if Input.is_action_just_pressed("restart"):

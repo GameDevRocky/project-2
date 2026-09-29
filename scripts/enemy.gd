@@ -206,6 +206,8 @@ var _strafe_dir: float = 1.0
 var _strafe_timer: float = 0.0
 
 var _gravity: float = 20.0
+var tdm_team := ""
+var tdm_manager = null
 
 var _mesh: MeshInstance3D
 var _health_bar: MeshInstance3D
@@ -234,9 +236,18 @@ func setup(id: String, health_scale: float) -> void:
 	health = max_health
 
 
+func setup_tdm(team_name: String, controller) -> void:
+	tdm_team = team_name
+	tdm_manager = controller
+	setup("sprayer", 1.0)
+
+
 func _ready() -> void:
 	# Tag this node so the player's paint knows it is a legal target.
 	add_to_group("enemies")
+	if not tdm_team.is_empty():
+		add_to_group("tdm_combatants")
+		collision_layer = 4
 
 	if stats.is_empty():
 		stats = TYPES["sprayer"]
@@ -258,7 +269,7 @@ func _ready() -> void:
 	# get_first_node_in_group finds the one node tagged "player". Looking the
 	# player up by group rather than by a hard-coded path means the enemy does
 	# not care where in the scene the player lives.
-	_player = get_tree().get_first_node_in_group("player")
+	_player = get_tree().get_first_node_in_group("player") if tdm_team.is_empty() else null
 
 
 func _build_body() -> void:
@@ -297,13 +308,16 @@ func _build_mesh() -> void:
 	_mesh.position = Vector3(0.0, float(stats["height"]) * 0.5, 0.0)
 
 	var mat := StandardMaterial3D.new()
-	mat.albedo_color = stats["color"]
+	var body_color: Color = stats["color"]
+	if not tdm_team.is_empty():
+		body_color = Color("#FF627E") if tdm_team == "RED" else Color("#58D7F2")
+	mat.albedo_color = body_color
 	mat.roughness = 0.85
 	mat.metallic = 0.0
 	# A glow of its own colour, so the body is always a step brighter than the
 	# room it is standing in.
 	mat.emission_enabled = true
-	mat.emission = stats["color"]
+	mat.emission = body_color
 	mat.emission_energy_multiplier = BASE_EMISSION
 	# Ignore the arena's distance haze. The room fades with distance; the
 	# thing trying to kill you should not.
@@ -324,7 +338,10 @@ func _build_health_bar() -> void:
 	_health_bar_bg.position = Vector3(0.0, bar_y, 0.0)
 	add_child(_health_bar_bg)
 
-	_health_bar = _make_bar_quad(Color(1.0, 0.36, 0.45, 1.0), 1.0)
+	var health_color := Color(1.0, 0.36, 0.45, 1.0)
+	if not tdm_team.is_empty():
+		health_color = Color("#FF627E") if tdm_team == "RED" else Color("#58D7F2")
+	_health_bar = _make_bar_quad(health_color, 1.0)
 	# Sit the fill a hair in front of the background so they do not fight over
 	# the same depth and flicker ("z-fighting").
 	_health_bar.position = Vector3(0.0, bar_y, 0.01)
@@ -358,6 +375,9 @@ func _make_bar_quad(bar_color: Color, width: float) -> MeshInstance3D:
 
 func _physics_process(delta: float) -> void:
 	if _dead:
+		return
+	if not tdm_team.is_empty():
+		_tdm_tick(delta)
 		return
 
 	_attack_cooldown -= delta
@@ -393,6 +413,54 @@ func _physics_process(delta: float) -> void:
 	_try_attack(player_position, distance)
 
 	move_and_slide()
+
+
+func _tdm_tick(delta: float) -> void:
+	_attack_cooldown -= delta
+	if not is_on_floor():
+		velocity.y -= _gravity * delta
+	else:
+		velocity.y = 0.0
+	var target = tdm_manager.find_enemy_for(self)
+	if target == null:
+		velocity.x = move_toward(velocity.x, 0.0, 12.0 * delta)
+		velocity.z = move_toward(velocity.z, 0.0, 12.0 * delta)
+		move_and_slide()
+		return
+	var offset: Vector3 = target.global_position - global_position
+	offset.y = 0.0
+	var distance := offset.length()
+	var toward := offset.normalized() if distance > 0.01 else Vector3.ZERO
+	if distance > 9.0:
+		velocity.x = toward.x * 4.4
+		velocity.z = toward.z * 4.4
+	else:
+		var strafe := toward.cross(Vector3.UP) * _strafe_dir
+		velocity.x = strafe.x * 2.0
+		velocity.z = strafe.z * 2.0
+	if _strafe_timer <= 0.0:
+		_strafe_timer = randf_range(1.0, 2.2)
+		if randf() < 0.5:
+			_strafe_dir *= -1.0
+	if distance > 0.01:
+		rotation.y = lerp_angle(rotation.y, atan2(toward.x, toward.z), 0.18)
+	if distance < 30.0 and _attack_cooldown <= 0.0 and _has_line_of_sight(target.global_position):
+		_attack_cooldown = 1.25
+		_fire_tdm_at(target)
+	move_and_slide()
+
+
+func _fire_tdm_at(target) -> void:
+	var from := global_position + Vector3(0.0, float(stats["height"]) * 0.6, 0.0)
+	var to: Vector3 = target.global_position + Vector3(0.0, 1.0, 0.0)
+	var glob = Node3D.new()
+	glob.set_script(Projectile)
+	glob.damage = 13.0
+	glob.speed = 28.0
+	glob.color = Color("#FF627E") if tdm_team == "RED" else Color("#58D7F2")
+	glob.configure_tdm(self, tdm_team)
+	get_parent().add_child(glob)
+	glob.setup(from, to - from, false)
 
 
 func _regenerate(delta: float) -> void:
@@ -567,9 +635,11 @@ func _fire_at(player_position: Vector3) -> void:
 
 ## Called by the player's paint. `amount` has already had the player's own
 ## damage multipliers applied; the only thing left is this enemy's resistance.
-func take_damage(amount: float) -> void:
+func take_damage(amount: float, attacker = null) -> void:
 	if _dead:
 		return
+	if not tdm_team.is_empty() and is_instance_valid(tdm_manager):
+		tdm_manager.record_damage(attacker, self)
 
 	health -= amount * float(stats["resist"])
 	_since_hurt = 0.0
@@ -608,12 +678,15 @@ func _die() -> void:
 	# Drop the paint core that carries this archetype's pair. It is spawned into
 	# the level rather than as a child of this enemy, because this enemy is
 	# about to be deleted and children are deleted with their parent.
-	var core = Node3D.new()
-	core.set_script(CorePickup)
-	core.pair_id = type_id
-	core.color = stats["color"]
-	get_parent().add_child(core)
-	core.global_position = global_position + Vector3(0.0, 0.7, 0.0)
+	if tdm_team.is_empty():
+		var core = Node3D.new()
+		core.set_script(CorePickup)
+		core.pair_id = type_id
+		core.color = stats["color"]
+		get_parent().add_child(core)
+		core.global_position = global_position + Vector3(0.0, 0.7, 0.0)
+	else:
+		tdm_manager.combatant_died(self)
 
 	died.emit(global_position)
 
@@ -623,6 +696,7 @@ func _die() -> void:
 	collision_layer = 0
 	collision_mask = 0
 	remove_from_group("enemies")
+	remove_from_group("tdm_combatants")
 	set_physics_process(false)
 
 	if _health_bar != null:

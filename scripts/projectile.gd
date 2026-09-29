@@ -52,6 +52,8 @@ var color: Color = Color.WHITE
 ## this, every missed shot would stay in memory forever and the game would
 ## slowly grind to a halt over a long run.
 var life: float = 4.0
+var attacker = null
+var attacker_team := ""
 
 
 # --- Physics layer numbers, named so the code reads clearly -----------------
@@ -97,9 +99,18 @@ func setup(from: Vector3, dir: Vector3, fired_by_player: bool) -> void:
 		# front line, which would make crowds trivial to beat.
 		hit_mask = LAYER_WORLD | LAYER_PLAYER
 		target_group = "player"
+	if not attacker_team.is_empty():
+		target_group = "tdm_combatants"
+		hit_mask = LAYER_WORLD | LAYER_PLAYER | LAYER_ENEMY
+
+
+func configure_tdm(source, team_name: String) -> void:
+	attacker = source
+	attacker_team = team_name
 
 
 func _ready() -> void:
+	add_to_group("projectiles")
 	# Build the visible glob in code: a small sphere that glows slightly so it
 	# reads clearly against the pale arena.
 	var mesh_node := MeshInstance3D.new()
@@ -162,7 +173,19 @@ func _physics_process(delta: float) -> void:
 	# intersect_ray gives back a Dictionary describing the first thing the line
 	# crossed, or an EMPTY dictionary if it crossed nothing. In GDScript an
 	# empty dictionary is "falsy", so `if hit:` reads as "if we hit something".
-	var hit := space.intersect_ray(query)
+	var hit: Dictionary = {}
+	var excluded: Array[RID] = []
+	while true:
+		query.exclude = excluded
+		hit = space.intersect_ray(query)
+		if hit.is_empty():
+			break
+		var collider = hit["collider"]
+		if (not attacker_team.is_empty() and collider.is_in_group("tdm_combatants")
+				and str(collider.get("tdm_team")) == attacker_team):
+			excluded.append(collider.get_rid())
+			continue
+		break
 	if hit:
 		_impact(hit["position"], hit["collider"])
 		return
@@ -181,8 +204,11 @@ func _impact(at: Vector3, what) -> void:
 	# script is attached. has_method() is a safety net: if something is tagged
 	# as a target but has no take_damage function, we skip it instead of
 	# crashing the whole game mid-wave.
-	if what != null and what.is_in_group(target_group) and what.has_method("take_damage"):
-		what.take_damage(damage)
+	var friendly_hit := false
+	if not attacker_team.is_empty() and what != null and what.is_in_group("tdm_combatants"):
+		friendly_hit = str(what.get("tdm_team")) == attacker_team
+	if what != null and not friendly_hit and what.is_in_group(target_group) and what.has_method("take_damage"):
+		what.take_damage(damage, attacker)
 
 	# Splash damage, if the shooter's inherited pair grants it. This is a plain
 	# distance check against everything in the target group rather than a
@@ -208,6 +234,8 @@ func _splash(at: Vector3, already_hit) -> void:
 			continue
 		if not node.has_method("take_damage"):
 			continue
+		if not attacker_team.is_empty() and str(node.get("tdm_team")) == attacker_team:
+			continue
 
 		# Deliberately untyped: see the note in _impact about static method checks.
 		var target = node
@@ -220,7 +248,7 @@ func _splash(at: Vector3, already_hit) -> void:
 		# positioning would not matter, which makes the Blotter pair strictly
 		# better than every other pair instead of a trade-off.
 		var falloff: float = 1.0 - (distance / splash_radius)
-		target.take_damage(splash_damage * falloff)
+		target.take_damage(splash_damage * falloff, attacker)
 
 	_spawn_burst(at)
 

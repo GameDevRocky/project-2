@@ -25,6 +25,7 @@ extends CharacterBody3D
 
 const Traits = preload("res://scripts/traits.gd")
 const Projectile = preload("res://scripts/projectile.gd")
+const CustomizationData = preload("res://scripts/character_customization_data.gd")
 
 
 # --- Signals ----------------------------------------------------------------
@@ -155,12 +156,17 @@ var _sway: Vector2 = Vector2.ZERO
 
 ## Ever-increasing timer used to drive the walking bob with a sine wave.
 var _bob_time: float = 0.0
+var customization: Dictionary = {}
+var tdm_team := ""
+var tdm_manager = null
 
 
 func _ready() -> void:
 	# add_to_group tags this node with a name other scripts can search for.
 	# Enemy paint looks for the "player" group to know what it may damage.
 	add_to_group("player")
+	if not tdm_team.is_empty():
+		add_to_group("tdm_combatants")
 
 	_build_body()
 	_build_camera()
@@ -257,6 +263,20 @@ func _build_view_model() -> void:
 	muzzle_mat.emission = Traits.WHITE
 	muzzle_mat.emission_energy_multiplier = 0.5
 	_view_model.add_child(_muzzle)
+	_apply_menu_customization()
+
+
+func _apply_menu_customization() -> void:
+	if customization.is_empty():
+		return
+	var palette := [Color("#FF6FAE"), Color("#63D9C7"), Color("#54C9E8"), Color("#F5C45E"), Color("#A78BFA"), Color("#F5F4F0"), Color("#FF867C"), Color("#79C991"), Color("#70BCEB"), Color("#C18B67")]
+	var band := _view_model.get_child(2) as MeshInstance3D
+	var gun_mat := band.material_override as StandardMaterial3D
+	var gun_skin := int(customization.get("gun_skin", customization.get("GUN SKINS", 0)))
+	gun_mat.albedo_color = palette[gun_skin % palette.size()]
+	var material_path := CustomizationData.gun_material_path(gun_skin)
+	if not material_path.is_empty() and ResourceLoader.exists(material_path):
+		band.material_override = load(material_path) as Material
 
 
 ## Small helper so the view-model above reads as a parts list instead of forty
@@ -392,6 +412,8 @@ func _shoot(_delta: float) -> void:
 	glob.splash_radius = _splash_radius
 	glob.splash_mult = _splash_mult
 	glob.color = pair["color"]
+	if not tdm_team.is_empty():
+		glob.configure_tdm(self, tdm_team)
 
 	# Add the glob to the level, NOT to the player. A child node moves with its
 	# parent, so a glob parented to the player would be dragged along behind you
@@ -436,7 +458,19 @@ func _aim_point() -> Vector3:
 	query.collide_with_areas = false
 	query.collide_with_bodies = true
 
-	var hit := space.intersect_ray(query)
+	var excluded: Array[RID] = []
+	var hit: Dictionary = {}
+	while true:
+		query.exclude = excluded
+		hit = space.intersect_ray(query)
+		if hit.is_empty():
+			break
+		var collider = hit["collider"]
+		if (not tdm_team.is_empty() and collider.is_in_group("tdm_combatants")
+				and str(collider.get("tdm_team")) == tdm_team):
+			excluded.append(collider.get_rid())
+			continue
+		break
 	if not hit:
 		return far
 
@@ -563,9 +597,11 @@ func _apply_pair(id: String) -> void:
 ## Called by enemy paint and by charging Bounders. The weakness multiplier is
 ## applied HERE, in one place, so no attack anywhere in the game can bypass
 ## Thick Coat or dodge Brittle Canvas.
-func take_damage(amount: float) -> void:
+func take_damage(amount: float, attacker = null) -> void:
 	if _dead:
 		return
+	if not tdm_team.is_empty() and is_instance_valid(tdm_manager):
+		tdm_manager.record_damage(attacker, self)
 
 	health -= amount * _taken_mult
 	_since_hurt = 0.0
@@ -578,6 +614,15 @@ func take_damage(amount: float) -> void:
 		_dead = true
 		_set_mouse_captured(false)
 		died.emit()
+
+
+func tdm_respawn(at: Vector3) -> void:
+	_dead = false
+	health = max_health
+	global_position = at
+	velocity = Vector3.ZERO
+	stats_changed.emit()
+	_set_mouse_captured(true)
 
 
 ## Called by game.gd between waves.

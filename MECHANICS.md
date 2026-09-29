@@ -13,9 +13,30 @@ Open the project in Godot 4.7 and press **F5**.
 | Move | `W` `A` `S` `D` |
 | Jump | `Space` |
 | Fire paint | Left mouse |
+| Look | Mouse movement |
 | **Inherit a core** | `E` while standing near it |
 | Release / recapture mouse | `Esc` / click |
 | Restart after a run ends | `R` |
+| Hold the TDM scoreboard | `Tab` |
+
+## Game modes
+
+**PLAY** opens the game-mode screen. The modes are separate:
+
+- **Team Death Match** fills two local simulated teams of ten, counts down,
+  then starts a ten-minute match. Team kills score points. The local player and
+  bots use the shared paint projectile and damage path. Bots target the other
+  team, respawn after three seconds, and update kills, deaths, and assists.
+  Holding `Tab` shows the live roster scoreboard. At `00:00`, the higher team
+  kill total wins (equal totals draw).
+- **Survival** starts the original six-wave run directly. Its waves, enemy
+  archetypes, inheritance, and Survival HUD remain on the existing path.
+
+The menu passes generic lobby records and the selected mode into `game.gd`.
+`game.gd` keeps Survival orchestration and starts
+`scripts/tdm_match_controller.gd` only for TDM. TDM bots are adapted from
+`scripts/enemy.gd`; `scripts/projectile.gd` remains the shared paint projectile.
+This is local simulation, not networking.
 
 ## The core loop
 
@@ -87,25 +108,97 @@ from the pair you are carrying, not from bullet sponges.
 
 ## Arena
 
-A 46m square with deliberate cover: four tall pillars that break line of sight,
-four mid blocks that break up the long wall runs, four low corner blocks, and a
-jumpable platform in the middle that trades sightlines for exposure. The layout
+A fixed 90m square arena built around a central hub, three enterable buildings,
+multiple side routes, and a recessed southern lane with ramps at both ends. The
+southwest building has a reachable upper firing floor; the central platform
+offers exposed high ground with a long sightline. Four Healing Stations sit in the northwest
+and northeast buildings, on the southwest upper floor, and along the lower route.
+The layout
 is fixed, never randomised — dying should teach you the room.
 
-## The three systems
+## Current code boundaries
 
 | System | Lives in | Owns |
 | --- | --- | --- |
-| **Game logic** | `scripts/game.gd` | Waves, spawning, the inherit offer, win/loss |
-| **UX** | `scripts/hud.gd` | Everything drawn on top of the 3D world |
-| **Multiplayer** | *Cut #1 — not in this build* | — |
+| **Survival game logic** | `scripts/game.gd` | Waves, Survival spawning, inherit offer, Survival endings |
+| **TDM match state** | `scripts/tdm_match_controller.gd` | Lobby roster, teams, TDM bot spawning, score, timer, respawn, scoreboard/results |
+| **Survival UX** | `scripts/hud.gd` | Survival HUD and Survival end panel |
+| **TDM UX** | `scripts/tdm_match_controller.gd` | TDM score/timer HUD, live scoreboard, TDM result panel |
+| **Networking** | Not implemented | Replace local simulated lobby records and bot actors with session-backed player records/actors later |
 
-Both seams run **one way only**. `game.gd` calls into the HUD; the HUD never
-calls back. `game.gd` spawns the player and enemies; they report back only by
-signal. A bug in the HUD can make the game look wrong but never behave wrong.
+The offline TDM controller is the current authority for TDM-only match state.
+Do not route Survival through that controller. A future online session should
+replace the local lobby population and authority layer, while keeping the menu
+and scoreboard data contracts generic.
 
-The multiplayer seam would attach at `_spawn_enemy()` in `game.gd`, which is
-deliberately the only place in the project that invents new world state.
+## Snitch mechanics handoff (implementation stub)
+
+**Status:** Snitch Ball behavior is not implemented in this checkout. No Snitch
+script or scene currently exists. The Healing Station already exposes the
+integration seam below; keep its implementation unchanged when adding Snitch
+behavior.
+
+### Existing handoff contract
+
+`scripts/healing_station.gd` declares:
+
+```gdscript
+signal power_traded(power_type: Variant, player: Node3D, station: Node3D)
+```
+
+The station emits this only after the interaction completes, its player power
+API confirms consumption, and the station heals the player. The signal is not
+emitted for the current healing-only fallback. `require_power_to_trade` defaults
+to `false`, so stations remain usable while the player power API is being built.
+
+The station expects the eventual player power API to provide:
+
+```gdscript
+has_current_power() -> bool
+get_current_power_type() -> Variant
+can_trade_power_at_station() -> bool
+try_consume_power_for_station() -> bool
+```
+
+The player is responsible for owning/consuming its power. The station does not
+store powers or decide Snitch pickup effects.
+
+### Suggested implementation seam
+
+Add a small `SnitchBallSystem` (or equivalent manager) and a reusable
+`SnitchBall` scene/script. In `game.gd::_build_healing_station()`, connect each
+station's `power_traded` signal to the manager. Suggested responsibilities:
+
+```gdscript
+SnitchBallSystem.register_station(station: Node3D) -> void
+SnitchBallSystem._on_station_power_traded(
+    power_type: Variant, player: Node3D, station: Node3D
+) -> void
+SnitchBall.setup(power_type: Variant, system: Node) -> void
+SnitchBall.collect(player: Node3D) -> void
+```
+
+These are design stubs, not existing methods. The manager should spawn one ball
+with the surrendered power type at the emitting station; the ball should accept
+only a valid player pickup and report collection once. Use the future shared
+power data/API rather than adding a second power inventory to the Snitch. Before
+implementing the pickup result, confirm the intended GDD rule for what collecting
+the ball does; that rule is not specified by the current code. Also confirm
+whether the mechanic is enabled in both modes or Survival only.
+
+### Integration and validation checklist for the next contributor
+
+1. Read this section and inspect `healing_station.gd`, `player.gd`, and the
+   current power data/API before editing.
+2. Leave `healing_station.gd` and `arena.gd` unchanged unless a concrete API
+   mismatch makes a minimal change necessary; prefer connecting its existing
+   signal from `game.gd`.
+3. Keep ball ownership and power types data-driven. Do not add online/network
+   assumptions or a second player power store.
+4. Verify a successful trade emits once with the correct power/player/station;
+   a canceled, interrupted, or unavailable-power interaction emits no ball.
+5. Verify pickup is one-shot, the intended power result is applied, the ball
+   cleans up, station cooldown still works, and Survival behavior is preserved.
 
 ## Testing
 
