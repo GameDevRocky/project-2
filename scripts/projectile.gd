@@ -28,7 +28,7 @@ extends Node3D
 var direction: Vector3 = Vector3.FORWARD
 
 ## Metres per second.
-var speed: float = 60.0
+var speed: float = 90.0
 
 ## Health removed from a target hit head-on.
 var damage: float = 22.0
@@ -45,7 +45,7 @@ var target_group: String = "enemies"
 var splash_radius: float = 0.0
 var splash_mult: float = 0.0
 
-## Paint colour, used for the glob mesh and the splat it leaves behind.
+## Paint colour, used for the bullet and its trail.
 var color: Color = Color.WHITE
 
 ## Seconds before the glob deletes itself if it never hits anything. Without
@@ -54,6 +54,7 @@ var color: Color = Color.WHITE
 var life: float = 4.0
 var attacker = null
 var attacker_team := ""
+var can_deal_damage := true
 
 
 # --- Physics layer numbers, named so the code reads clearly -----------------
@@ -64,6 +65,9 @@ var attacker_team := ""
 const LAYER_WORLD := 1
 const LAYER_PLAYER := 2
 const LAYER_ENEMY := 4
+const BULLET_RADIUS := 0.06
+const TRAIL_LENGTH := 1.15
+const TRAIL_RADIUS := 0.022
 
 
 # Where the glob was at the end of the previous frame. The ray each frame is
@@ -88,6 +92,9 @@ func setup(from: Vector3, dir: Vector3, fired_by_player: bool) -> void:
 	# Doing it here means callers can hand in any length and still get a glob
 	# that travels at exactly `speed`.
 	direction = dir.normalized()
+	# A Node3D faces along its local -Z axis. Pointing the projectile node along
+	# its travel direction also points the child tracer directly behind it.
+	look_at(from + direction, Vector3.UP)
 
 	if fired_by_player:
 		# The player's paint hits walls and enemies, and passes over the player.
@@ -111,12 +118,13 @@ func configure_tdm(source, team_name: String) -> void:
 
 func _ready() -> void:
 	add_to_group("projectiles")
-	# Build the visible glob in code: a small sphere that glows slightly so it
-	# reads clearly against the pale arena.
+	# Build a compact glowing bullet. Collision still uses the frame-to-frame
+	# ray below, so shrinking the visible sphere cannot make fast shots tunnel.
 	var mesh_node := MeshInstance3D.new()
+	mesh_node.name = "Bullet"
 	var sphere := SphereMesh.new()
-	sphere.radius = 0.14
-	sphere.height = 0.28
+	sphere.radius = BULLET_RADIUS
+	sphere.height = BULLET_RADIUS * 2.0
 	# radial_segments/rings control how many triangles the ball is made of.
 	# Low numbers keep it faceted, which suits the GDD's "low-poly" direction
 	# and costs almost nothing to draw even with dozens on screen.
@@ -143,6 +151,36 @@ func _ready() -> void:
 	mesh_node.material_override = mat
 
 	add_child(mesh_node)
+	_build_trail()
+
+
+## Adds a thin glowing streak behind the bullet. CylinderMesh points along its
+## local Y axis, so rotating it 90 degrees lays it along local +Z, behind the
+## projectile's -Z travel direction.
+func _build_trail() -> void:
+	var trail := MeshInstance3D.new()
+	trail.name = "Trail"
+	var trail_mesh := CylinderMesh.new()
+	trail_mesh.top_radius = TRAIL_RADIUS
+	trail_mesh.bottom_radius = 0.0
+	trail_mesh.height = TRAIL_LENGTH
+	trail_mesh.radial_segments = 6
+	trail_mesh.rings = 1
+	trail.mesh = trail_mesh
+	trail.rotation.x = deg_to_rad(90.0)
+	trail.position.z = TRAIL_LENGTH * 0.5
+	trail.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+
+	var trail_material := StandardMaterial3D.new()
+	trail_material.albedo_color = Color(color.r, color.g, color.b, 0.72)
+	trail_material.emission_enabled = true
+	trail_material.emission = color
+	trail_material.emission_energy_multiplier = 2.2
+	trail_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	trail_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	trail_material.disable_fog = true
+	trail.material_override = trail_material
+	add_child(trail)
 
 
 ## _physics_process runs on the engine's fixed physics clock (60 times a second
@@ -207,17 +245,16 @@ func _impact(at: Vector3, what) -> void:
 	var friendly_hit := false
 	if not attacker_team.is_empty() and what != null and what.is_in_group("tdm_combatants"):
 		friendly_hit = str(what.get("tdm_team")) == attacker_team
-	if what != null and not friendly_hit and what.is_in_group(target_group) and what.has_method("take_damage"):
+	if can_deal_damage and what != null and not friendly_hit and what.is_in_group(target_group) and what.has_method("take_damage"):
 		what.take_damage(damage, attacker)
 
 	# Splash damage, if the shooter's inherited pair grants it. This is a plain
 	# distance check against everything in the target group rather than a
 	# physics sphere query - with at most a couple of dozen enemies alive it is
 	# just as fast, and it is far easier to read and to debug.
-	if splash_radius > 0.0:
+	if can_deal_damage and splash_radius > 0.0:
 		_splash(at, what)
 
-	_spawn_splat(at)
 	queue_free()
 
 
@@ -251,46 +288,6 @@ func _splash(at: Vector3, already_hit) -> void:
 		target.take_damage(splash_damage * falloff, attacker)
 
 	_spawn_burst(at)
-
-
-## Leaves a flat disc of paint where the glob landed, which fades out. Pure
-## decoration - it is what makes the arena visibly get messier as a fight goes
-## on, which is the whole "clean up canvas-like battlefields" idea from the GDD.
-func _spawn_splat(at: Vector3) -> void:
-	var splat := MeshInstance3D.new()
-	var quad := SphereMesh.new()
-	quad.radius = 0.35
-	quad.height = 0.12
-	quad.radial_segments = 7
-	quad.rings = 3
-	splat.mesh = quad
-
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = color
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	# Transparency has to be switched on explicitly before an alpha value in
-	# albedo_color will do anything at all.
-	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	# Fog on a see-through material still tints it even as it fades out, which
-	# would leave a faint lavender ghost where the splat was. Paint stays paint.
-	mat.disable_fog = true
-	splat.material_override = mat
-
-	# Add the splat to the level rather than to this glob - this glob is about
-	# to delete itself, and a child always dies with its parent.
-	get_parent().add_child(splat)
-	splat.global_position = at
-
-	# A Tween animates values over time. This one grows the splat slightly and
-	# fades it to fully transparent, then deletes it. tween_property takes the
-	# property path as a string, the value to reach, and how many seconds.
-	# set_parallel makes the two animations run at the same time instead of
-	# one after the other.
-	var tween := splat.create_tween()
-	tween.set_parallel(true)
-	tween.tween_property(splat, "scale", Vector3(1.6, 0.6, 1.6), 0.25)
-	tween.tween_property(mat, "albedo_color:a", 0.0, 1.8).set_delay(0.5)
-	tween.chain().tween_callback(splat.queue_free)
 
 
 ## A quick expanding ring drawn when a Splatter Round bursts, so the player can
