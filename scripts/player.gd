@@ -26,6 +26,9 @@ extends CharacterBody3D
 const Traits = preload("res://scripts/traits.gd")
 const Projectile = preload("res://scripts/projectile.gd")
 const CustomizationData = preload("res://scripts/character_customization_data.gd")
+const PaintKit = preload("res://scripts/visual/paint_kit.gd")
+const PaintFx = preload("res://scripts/visual/paint_fx.gd")
+const ShaderWarmup = preload("res://scripts/visual/shader_warmup.gd")
 
 
 # --- Signals ----------------------------------------------------------------
@@ -46,6 +49,11 @@ signal died
 
 ## Fired when a new pair is inherited, carrying the pair data for the HUD popup.
 signal pair_inherited(pair: Dictionary)
+
+## Fired when one of YOUR globs damaged something, so the HUD can flash a hit
+## marker on the crosshair. Feedback only: the damage has already happened in
+## projectile.gd exactly as before; this just reports it.
+signal hit_confirmed
 
 
 # --- Base tuning numbers ----------------------------------------------------
@@ -146,6 +154,20 @@ var _camera: Camera3D
 var _view_model: Node3D
 var _muzzle: MeshInstance3D
 
+## Parts of the Paint Blaster model (models/generated/paint_blaster.glb) that
+## move. All purely visual: they READ ammo, they never change it.
+var _skin_band: MeshInstance3D
+var _gun_fill: Node3D
+var _gun_needle: Node3D
+var _gun_regulator: Node3D
+## A little puff of paint thrown from the bristles on each shot.
+var _muzzle_puff: CPUParticles3D
+
+## Where globs leave the gun, in view-model space. Unchanged since the
+## original box gun; the Paint Blaster model is built around it.
+const MUZZLE_POINT := Vector3(0.0, 0.0, -0.36)
+const VIEW_GUN_SCALE := 1.15
+
 ## Where the view-model sits when you are perfectly still. Sway and bob are
 ## always applied as an offset from this, so the gun can never drift away from
 ## its home position over a long play session.
@@ -235,11 +257,66 @@ func _build_camera() -> void:
 ## The paintbrush-rifle you see in your hands. It is parented to the CAMERA,
 ## not to the player body, so it turns with your view for free - if it hung off
 ## the body it would stay level while you looked up and down.
+##
+## The gun is the generated Paint Blaster model. Its `Muzzle` part (the bristle
+## tuft) has its origin exactly where the old white cube sat, (0, 0, -0.36) in
+## view-model space, so globs spawn from the same point as before and the
+## aim-toward-the-crosshair maths in _shoot() is unchanged. If the model file is
+## missing, the original three-box gun is built instead.
 func _build_view_model() -> void:
 	_view_model = Node3D.new()
 	_view_model.position = _view_model_home
 	_camera.add_child(_view_model)
 
+	var blaster := PaintKit.instance("paint_blaster")
+	if blaster == null:
+		_build_box_gun()
+	else:
+		# Drawn 1.15x bigger so it reads as a chunky tool in first person. The
+		# scaling is done AROUND the muzzle point, so the Muzzle node (and so
+		# the glob spawn point) stays exactly at (0, 0, -0.36).
+		blaster.scale = Vector3.ONE * VIEW_GUN_SCALE
+		blaster.position = MUZZLE_POINT * (1.0 - VIEW_GUN_SCALE)
+		_view_model.add_child(blaster)
+		# The first-person gun must not throw a shadow onto the floor in front
+		# of you - it is not really there in the world.
+		PaintKit.set_shadows(blaster, false)
+		_muzzle = PaintKit.part(blaster, "Muzzle") as MeshInstance3D
+		_skin_band = PaintKit.part(blaster, "SkinBand") as MeshInstance3D
+		_gun_fill = PaintKit.part(blaster, "Fill")
+		_gun_needle = PaintKit.part(blaster, "Needle")
+		_gun_regulator = PaintKit.part(blaster, "Regulator")
+		# The bristles, the paint in the tank and the drips all show the pair
+		# colour. They share ONE material, which _apply_pair() repaints, so the
+		# existing "repaint the muzzle" code colours all three at once.
+		var pair_mat := StandardMaterial3D.new()
+		pair_mat.roughness = 0.3
+		pair_mat.emission_enabled = true
+		pair_mat.emission_energy_multiplier = 0.5
+		_muzzle.material_override = pair_mat
+		for part_name in ["Fill", "PaintDrips"]:
+			var painted := PaintKit.part(blaster, part_name) as GeometryInstance3D
+			if painted != null:
+				painted.material_override = pair_mat
+		# The muzzle puff rides on the bristles (local_coords), so it stays
+		# with the gun as you turn instead of hanging in the air behind you.
+		_muzzle_puff = PaintFx.make(Color.WHITE, 6, 1.6, 0.3, 0.16)
+		_muzzle_puff.local_coords = true
+		_muzzle_puff.direction = Vector3.FORWARD
+		_muzzle_puff.spread = 28.0
+		_muzzle_puff.gravity = Vector3.ZERO
+		_muzzle.add_child(_muzzle_puff)
+	_apply_menu_customization()
+	# Draw every effect material once while the match loads (see the script),
+	# so the web build does not freeze at the first hit of the match.
+	var warmup := Node3D.new()
+	warmup.set_script(ShaderWarmup)
+	_camera.add_child(warmup)
+
+
+## The original prototype gun: three boxes and a bristle cube. Only used if the
+## generated model is missing.
+func _build_box_gun() -> void:
 	# The rifle body - a charcoal block, the GDD's "structural accent".
 	_view_model.add_child(_make_box(
 		Vector3(0.09, 0.1, 0.55), Vector3(0.0, 0.0, 0.0), Traits.CHARCOAL))
@@ -247,31 +324,31 @@ func _build_view_model() -> void:
 	_view_model.add_child(_make_box(
 		Vector3(0.07, 0.2, 0.09), Vector3(0.0, -0.13, 0.14), Traits.CHARCOAL))
 	# A teal band, so the gun is not one flat slab of dark.
-	_view_model.add_child(_make_box(
-		Vector3(0.1, 0.045, 0.12), Vector3(0.0, 0.035, -0.06), Traits.TEAL))
-
-	# The bristle head at the muzzle. This one is stored so its colour can be
-	# repainted to match whatever pair you have inherited - it is the clearest
-	# possible readout of "what am I right now", sitting in the middle of the
-	# screen where you are already looking.
+	_skin_band = _make_box(Vector3(0.1, 0.045, 0.12), Vector3(0.0, 0.035, -0.06), Traits.TEAL)
+	_view_model.add_child(_skin_band)
+	# The bristle head at the muzzle, repainted to the inherited pair's colour.
 	_muzzle = _make_box(Vector3(0.12, 0.13, 0.16), Vector3(0.0, 0.0, -0.36), Traits.WHITE)
-	# A soft glow in the pair's colour, so the brush head stays a clear, bright
-	# swatch whichever way you are facing the sun. _apply_pair() keeps the glow
-	# colour in step with the paint colour.
 	var muzzle_mat: StandardMaterial3D = _muzzle.material_override
 	muzzle_mat.emission_enabled = true
 	muzzle_mat.emission = Traits.WHITE
 	muzzle_mat.emission_energy_multiplier = 0.5
 	_view_model.add_child(_muzzle)
-	_apply_menu_customization()
 
 
 func _apply_menu_customization() -> void:
 	if customization.is_empty():
 		return
 	var palette := [Color("#FF6FAE"), Color("#63D9C7"), Color("#54C9E8"), Color("#F5C45E"), Color("#A78BFA"), Color("#F5F4F0"), Color("#FF867C"), Color("#79C991"), Color("#70BCEB"), Color("#C18B67")]
-	var band := _view_model.get_child(2) as MeshInstance3D
+	# Found by name when the gun was built (it used to be "child number 2",
+	# which silently broke as soon as the gun's parts changed).
+	var band := _skin_band
+	if band == null:
+		return
 	var gun_mat := band.material_override as StandardMaterial3D
+	if gun_mat == null:
+		gun_mat = StandardMaterial3D.new()
+		gun_mat.roughness = 0.4
+		band.material_override = gun_mat
 	var gun_skin := int(customization.get("gun_skin", customization.get("GUN SKINS", 0)))
 	gun_mat.albedo_color = palette[gun_skin % palette.size()]
 	var material_path := CustomizationData.gun_material_path(gun_skin)
@@ -412,6 +489,9 @@ func _shoot(_delta: float) -> void:
 	glob.splash_radius = _splash_radius
 	glob.splash_mult = _splash_mult
 	glob.color = pair["color"]
+	# Who to tell when this glob lands a hit (the crosshair hit marker).
+	# Nothing in the damage path reads this.
+	glob.source_player = self
 	if not tdm_team.is_empty():
 		glob.configure_tdm(self, tdm_team)
 
@@ -438,6 +518,8 @@ func _shoot(_delta: float) -> void:
 	glob.setup(_muzzle.global_position, aim - _muzzle.global_position, true)
 
 	_kick_view_model()
+	if _muzzle_puff != null:
+		_muzzle_puff.restart()
 	stats_changed.emit()
 
 
@@ -522,6 +604,26 @@ func _animate_view_model(delta: float) -> void:
 
 	var target := _view_model_home + sway_offset + bob_offset
 	_view_model.position = _view_model.position.lerp(target, clampf(delta * 14.0, 0.0, 1.0))
+	_animate_gun_parts(delta)
+
+
+## The Paint Blaster's tank is a second paint gauge: the paint inside drains
+## toward the back of the tank as `ammo` falls, and the pressure needle follows.
+## The brass regulator spins while the reservoir refills. All of this only READS
+## ammo and the refill timer; nothing here changes how the gun behaves.
+func _animate_gun_parts(delta: float) -> void:
+	if _gun_fill == null:
+		return
+	var fraction: float = clampf(ammo / maxf(_max_ammo, 1.0), 0.0, 1.0)
+	var smoothing := clampf(delta * 12.0, 0.0, 1.0)
+	# The Fill part's origin is the back of the tank and it extends forward
+	# along -Z, so scaling Z shortens the paint toward the back. Never exactly
+	# zero - a zero scale makes the node's transform degenerate.
+	_gun_fill.scale.z = lerpf(_gun_fill.scale.z, maxf(fraction, 0.02), smoothing)
+	if _gun_needle != null:
+		_gun_needle.rotation.x = lerp_angle(_gun_needle.rotation.x, lerpf(1.1, -1.1, fraction), smoothing)
+	if _gun_regulator != null and _since_fired >= ammo_regen_delay and ammo < _max_ammo:
+		_gun_regulator.rotate_z(delta * 7.0)
 
 
 ## A short recoil shove, run on every shot. Animating the gun rather than the
@@ -529,6 +631,12 @@ func _animate_view_model(delta: float) -> void:
 func _kick_view_model() -> void:
 	_view_model.position.z += 0.05
 	_view_model.position.y -= 0.012
+	# The bristles squash a little on each shot. Scaling the Muzzle node does
+	# not move its origin, so the glob spawn point is unaffected.
+	if _muzzle != null and _gun_fill != null:
+		_muzzle.scale = Vector3(1.12, 1.12, 0.8)
+		var tween := create_tween()
+		tween.tween_property(_muzzle, "scale", Vector3.ONE, 0.12)
 
 
 # ============================================================================
@@ -588,6 +696,8 @@ func _apply_pair(id: String) -> void:
 		var mat = _muzzle.material_override
 		mat.albedo_color = pair["color"]
 		mat.emission = pair["color"]
+	if _muzzle_puff != null:
+		_muzzle_puff.color = pair["color"]
 
 
 # ============================================================================
@@ -614,6 +724,12 @@ func take_damage(amount: float, attacker = null) -> void:
 		_dead = true
 		_set_mouse_captured(false)
 		died.emit()
+
+
+## Called by one of this player's globs when it damages something. Only
+## announces it (for the HUD); see hit_confirmed above.
+func confirm_hit() -> void:
+	hit_confirmed.emit()
 
 
 func tdm_respawn(at: Vector3) -> void:

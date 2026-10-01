@@ -6,6 +6,9 @@ const MATCH_SCENE := preload("res://scenes/match.tscn")
 const Data := preload("res://scripts/character_customization_data.gd")
 const PreviewScript := preload("res://scripts/character_preview.gd")
 const PortraitScript := preload("res://scripts/bean_portrait.gd")
+const UITheme = preload("res://scripts/ui/ui_theme.gd")
+const BrushStroke = preload("res://scripts/ui/widgets/brush_stroke.gd")
+const PaintKit = preload("res://scripts/visual/paint_kit.gd")
 const MAX_PER_TEAM := 10
 const JOIN_DELAY := 1.8
 const COUNTDOWN_SECONDS := 5
@@ -22,8 +25,8 @@ const SIM_NAMES := [
 	"MintMaverick", "PrismDash", "BubbleByte", "StarSprayer", "JellyJolt",
 	"Chromatic", "DoodleDrift", "NovaNozzle", "SplashOrbit",
 ]
-const TEAM_RED := Color("#FF627E")
-const TEAM_BLUE := Color("#58D7F2")
+const TEAM_RED := UITheme.TEAM_RED
+const TEAM_BLUE := UITheme.TEAM_BLUE
 
 var customization: Dictionary = Data.create_session_data()
 var lobby_players: Array[Dictionary] = []
@@ -54,6 +57,9 @@ var red_rows: VBoxContainer
 var blue_rows: VBoxContainer
 var fill_label: Label
 var inspection_hide_nodes: Array[Node3D] = []
+## The customize page's card, so drag-to-rotate can start at its real edge.
+var customize_panel: Control
+var fullscreen_toggle: Button
 
 
 func _ready() -> void:
@@ -119,10 +125,30 @@ func _build_showcase() -> void:
 	stage.add_child(floor)
 	# Original Glowfall stage: floating paint slats and a halo frame keep the
 	# silhouette dramatic while leaving the left side open for menu controls.
+	# The uprights are giant paint brushes (models/generated/prop_giant_brush),
+	# standing where the original glowing slats stood, their tips dipped in
+	# glowing paint in the same accent colours. Falls back to the slats if the
+	# model is missing.
 	for i in 7:
-		var panel := _box(Vector3(0.23, 2.0 + float(i % 3) * 0.55, 0.22), Color(Data.ACCENT_COLORS[i]), true)
-		panel.position = Vector3(-4.4 + i * 1.42, panel.mesh.get_aabb().size.y * 0.5, -2.65 - float(i % 2) * 0.25)
-		stage.add_child(panel)
+		var height := 2.0 + float(i % 3) * 0.55
+		var accent := Color(Data.ACCENT_COLORS[i])
+		var brush := PaintKit.instance("prop_giant_brush")
+		if brush == null:
+			var panel := _box(Vector3(0.23, height, 0.22), accent, true)
+			panel.position = Vector3(-4.4 + i * 1.42, height * 0.5, -2.65 - float(i % 2) * 0.25)
+			stage.add_child(panel)
+			continue
+		var glow := StandardMaterial3D.new()
+		glow.albedo_color = accent
+		glow.emission_enabled = true
+		glow.emission = accent
+		glow.emission_energy_multiplier = 1.4
+		PaintKit.paint(brush, accent, Color.WHITE, false,
+			{"PK_Dry1": glow, "PK_Dry2": glow, "PK_Dry3": glow, "PK_Dry4": glow})
+		brush.scale = Vector3.ONE * (height / 4.0)
+		brush.position = Vector3(-4.4 + i * 1.42, 0.0, -2.65 - float(i % 2) * 0.25)
+		brush.rotation.y = deg_to_rad(-12.0 + float(i % 3) * 12.0)
+		stage.add_child(brush)
 	var halo := MeshInstance3D.new()
 	var halo_mesh := TorusMesh.new()
 	halo_mesh.inner_radius = 1.05
@@ -226,6 +252,10 @@ func _build_ui() -> void:
 	screen_root = Control.new()
 	screen_root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	screen_root.mouse_filter = Control.MOUSE_FILTER_PASS
+	# One shared theme for every page (scripts/ui/ui_theme.gd): button padding,
+	# hover/focus styles, panel boxes and heading sizes are inherited by every
+	# Control built under this root.
+	screen_root.theme = UITheme.build()
 	layer.add_child(screen_root)
 	var shade := ColorRect.new()
 	shade.color = Color(0.025, 0.03, 0.08, 0.34)
@@ -250,68 +280,69 @@ func _clear_screen() -> void:
 		child.queue_free()
 
 
-func _label(parent: Control, text_value: String, at: Vector2, size: Vector2, font_size := 18, color := Color("#F8F5FF")) -> Label:
+## A Label styled by one of the shared theme's type variations (TitleLabel,
+## HeaderLabel, SubLabel, BodyLabel, DimLabel). It takes no position or size:
+## the container it is added to lays it out.
+func _label(parent: Control, text_value: String, variation: StringName = &"BodyLabel", color: Variant = null) -> Label:
 	var label := Label.new()
 	label.text = text_value
-	label.position = at
-	label.size = size
-	label.add_theme_font_size_override("font_size", font_size)
-	label.add_theme_color_override("font_color", color)
+	label.theme_type_variation = variation
+	if color != null:
+		label.add_theme_color_override("font_color", color)
+	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	parent.add_child(label)
 	return label
 
 
-func _panel(parent: Control, at: Vector2, size: Vector2, tint: Color, border := 2) -> PanelContainer:
+## A themed PanelContainer with a coloured border. The caller decides where it
+## goes (pinned to an edge, or inside a CenterContainer).
+func _panel(tint: Color, border := 1) -> PanelContainer:
 	var panel := PanelContainer.new()
-	panel.position = at
-	panel.size = size
-	var style := StyleBoxFlat.new()
-	style.bg_color = Color(0.055, 0.065, 0.11, 0.91)
-	style.border_color = tint
-	style.set_border_width_all(border)
-	style.corner_radius_top_left = 8
-	style.corner_radius_top_right = 8
-	style.corner_radius_bottom_left = 8
-	style.corner_radius_bottom_right = 8
-	style.content_margin_left = 14
-	style.content_margin_right = 14
-	style.content_margin_top = 10
-	style.content_margin_bottom = 10
-	panel.add_theme_stylebox_override("panel", style)
-	parent.add_child(panel)
+	panel.add_theme_stylebox_override("panel", UITheme.panel(tint, border))
 	return panel
 
 
-func _button(parent: Control, text_value: String, at: Vector2, size: Vector2, action: Callable, disabled := false, accent := Color("#8CEADF")) -> Button:
+## A themed button. Padding, hover and focus styles come from the shared theme
+## (so text never touches the border); `accent` tints this button's hover edge
+## and text. Its width comes from the container it is in.
+func _button(parent: Control, text_value: String, action: Callable, accent := Color("#8CEADF"), disabled := false) -> Button:
 	var button := Button.new()
 	button.text = text_value
-	button.position = at
-	button.size = size
 	button.disabled = disabled
 	button.alignment = HORIZONTAL_ALIGNMENT_LEFT
-	button.add_theme_font_size_override("font_size", 16)
-	button.add_theme_color_override("font_color", Color("#FAF7FF"))
-	button.add_theme_color_override("font_hover_color", accent)
-	button.add_theme_color_override("font_disabled_color", Color("#747586"))
-	var normal := StyleBoxFlat.new()
-	normal.bg_color = Color(0.055, 0.065, 0.11, 0.78)
-	normal.border_color = Color(accent, 0.4)
-	normal.set_border_width_all(1)
-	normal.corner_radius_top_left = 4
-	normal.corner_radius_top_right = 4
-	normal.corner_radius_bottom_left = 4
-	normal.corner_radius_bottom_right = 4
-	button.add_theme_stylebox_override("normal", normal)
-	var hover := normal.duplicate() as StyleBoxFlat
-	hover.bg_color = Color(accent, 0.19)
-	hover.border_color = accent
-	button.add_theme_stylebox_override("hover", hover)
+	button.custom_minimum_size = Vector2(0, 50)
+	UITheme.accent_button(button, accent)
 	button.pressed.connect(action)
-	var focus_first := parent.find_children("*", "Button", true, false).is_empty()
+	# A little motion on hover/focus and on press, so the menu feels
+	# responsive. Visual only - the click itself is unchanged.
+	button.mouse_entered.connect(func(): _hover_motion(button, true))
+	button.mouse_exited.connect(func(): _hover_motion(button, false))
+	button.focus_entered.connect(func(): _hover_motion(button, true))
+	button.focus_exited.connect(func(): _hover_motion(button, false))
+	button.button_down.connect(func(): _press_motion(button))
 	parent.add_child(button)
-	if focus_first and not disabled:
-		button.call_deferred("grab_focus")
 	return button
+
+
+## Grows a button 2% while hovered or focused. It grows from its LEFT edge
+## (pivot on the left), so a full-width button never pushes into the card's
+## left margin; the right side has padding to spare.
+func _hover_motion(button: Button, on: bool) -> void:
+	if not is_instance_valid(button) or button.disabled:
+		return
+	button.pivot_offset = Vector2(0.0, button.size.y * 0.5)
+	var tween := button.create_tween()
+	tween.tween_property(button, "scale", Vector2.ONE * (1.02 if on else 1.0), 0.12).set_trans(Tween.TRANS_CUBIC)
+
+
+## A quick squash on press.
+func _press_motion(button: Button) -> void:
+	if not is_instance_valid(button):
+		return
+	button.pivot_offset = Vector2(0.0, button.size.y * 0.5)
+	var tween := button.create_tween()
+	tween.tween_property(button, "scale", Vector2.ONE * 0.97, 0.05)
+	tween.tween_property(button, "scale", Vector2.ONE * 1.02, 0.1)
 
 
 func _show_main() -> void:
@@ -324,18 +355,18 @@ func _show_main() -> void:
 	for decor in inspection_hide_nodes:
 		decor.visible = true
 	_clear_screen()
-	var card := _panel(menu_content, Vector2(36, 40), Vector2(430, 625), Color("#70DED5"), 1)
-	var content := Control.new()
-	card.add_child(content)
-	_label(content, "PAINT STRIKE:\nGLOWFALL", Vector2(12, 18), Vector2(390, 118), 39)
-	_label(content, "TEAM DEATHMATCH  /  PAINT THE FUTURE", Vector2(14, 137), Vector2(390, 28), 13, Color("#93E7DD"))
-	var user_label := _label(content, "LOCAL PILOT  •  %s" % _username(), Vector2(14, 174), Vector2(390, 25), 15, Color("#F49BC9"))
-	_button(content, "PLAY", Vector2(12, 235), Vector2(374, 54), _begin_play, false, Color("#FF7391"))
-	_button(content, "CUSTOMIZE CHARACTER", Vector2(12, 300), Vector2(374, 54), func(): _open_customization("main"))
-	_button(content, "SETTINGS", Vector2(12, 365), Vector2(374, 54), _show_settings)
-	_button(content, "QUIT", Vector2(12, 430), Vector2(374, 54), func(): get_tree().quit())
-	_label(content, "LOCAL SESSION  •  GLOWFALL TEST BAY", Vector2(14, 568), Vector2(370, 22), 11, Color("#A7A7BC"))
-	user_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var column := _side_card(Color("#70DED5"))
+	_title(column, "PAINT STRIKE:\nGLOWFALL", Color("#FF7391"), 39)
+	_label(column, "TEAM DEATHMATCH  /  PAINT THE FUTURE", &"SubLabel")
+	_label(column, "LOCAL PILOT  •  %s" % _username(), &"BodyLabel", Color("#F49BC9"))
+	_spacer(column, 22.0)
+	var play := _button(column, "PLAY", _begin_play, Color("#FF7391"))
+	_button(column, "CUSTOMIZE CHARACTER", func(): _open_customization("main"))
+	_button(column, "SETTINGS", _show_settings)
+	_button(column, "QUIT", func(): get_tree().quit())
+	_spacer(column)
+	_label(column, "LOCAL SESSION  •  GLOWFALL TEST BAY", &"DimLabel")
+	play.grab_focus.call_deferred()
 	menu_content.modulate.a = 0.0
 	_create_tween().tween_property(menu_content, "modulate:a", 1.0, 0.28)
 
@@ -377,16 +408,29 @@ func _begin_play() -> void:
 func _show_mode_select() -> void:
 	current_screen = "mode_select"
 	_clear_screen()
-	var card := _panel(menu_content, Vector2(300, 92), Vector2(680, 540), Color("#5AD8EF"), 1)
-	var content := Control.new()
-	card.add_child(content)
-	_label(content, "SELECT A GAME MODE", Vector2(24, 26), Vector2(620, 54), 32)
-	_label(content, "CHOOSE YOUR GLOWFALL MATCH", Vector2(26, 81), Vector2(620, 24), 14, Color("#9FE9E1"))
-	_button(content, "TEAM DEATH MATCH", Vector2(38, 142), Vector2(600, 110), _select_tdm, false, Color("#FF718A"))
-	_label(content, "Two teams. Ten minutes. Most eliminations wins.", Vector2(58, 220), Vector2(560, 24), 15, Color("#DDE7F3"))
-	_button(content, "SURVIVAL", Vector2(38, 286), Vector2(600, 110), func(): _launch_survival(), false, Color("#65E2D2"))
-	_label(content, "Fight through waves and survive as long as you can.", Vector2(58, 364), Vector2(560, 24), 15, Color("#DDE7F3"))
-	_button(content, "BACK", Vector2(38, 446), Vector2(180, 48), func(): _fade_transition(_show_main, false))
+	# CenterContainer keeps the card in the middle of the window at any size.
+	var centre := CenterContainer.new()
+	centre.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	centre.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	menu_content.add_child(centre)
+	var card := _panel(Color("#5AD8EF"), 1)
+	card.custom_minimum_size = Vector2(680, 0)
+	centre.add_child(card)
+	var column := VBoxContainer.new()
+	column.add_theme_constant_override("separation", 12)
+	card.add_child(column)
+	_title(column, "SELECT A GAME MODE", Color("#5AD8EF"), 32)
+	_label(column, "CHOOSE YOUR GLOWFALL MATCH", &"SubLabel")
+	_spacer(column, 6.0)
+	var tdm := _mode_button(column, "TEAM DEATH MATCH", "Two teams. Ten minutes. Most eliminations wins.",
+		"10 V 10", _select_tdm, Color("#FF718A"))
+	_mode_button(column, "SURVIVAL", "Fight through waves and survive as long as you can.",
+		"6 WAVES", func(): _launch_survival(), Color("#65E2D2"))
+	_spacer(column, 6.0)
+	var back := _button(column, "BACK", func(): _fade_transition(_show_main, false))
+	back.custom_minimum_size = Vector2(180, 48)
+	back.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+	tdm.grab_focus.call_deferred()
 	menu_content.modulate.a = 0.0
 	_create_tween().tween_property(menu_content, "modulate:a", 1.0, 0.22)
 
@@ -450,39 +494,73 @@ func _lobby_to_match() -> void:
 func _build_lobby_screen(status: String) -> void:
 	current_screen = "lobby"
 	_clear_screen()
-	var title := _label(menu_content, "TEAM DEATHMATCH", Vector2(0, 26), Vector2(1280, 48), 31)
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	status_label = _label(menu_content, "MATCH STARTING" if match_starting else status, Vector2(0, 78), Vector2(1280, 26), 16, Color("#B4EEE7"))
+	# A MarginContainer keeps an even border round the whole page and a VBox
+	# stacks header, teams and footer. The team panels EXPAND to fill whatever
+	# height is left, so the footer buttons always sit at the bottom of the
+	# window instead of at a fixed y of 674.
+	var page := MarginContainer.new()
+	page.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	page.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	page.add_theme_constant_override("margin_left", 40)
+	page.add_theme_constant_override("margin_right", 40)
+	page.add_theme_constant_override("margin_top", 20)
+	page.add_theme_constant_override("margin_bottom", 22)
+	menu_content.add_child(page)
+	var column := VBoxContainer.new()
+	column.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	column.add_theme_constant_override("separation", 10)
+	page.add_child(column)
+	_title(column, "TEAM DEATHMATCH", Color("#58D7F2"), 32, true)
+	status_label = _label(column, "MATCH STARTING" if match_starting else status, &"SubLabel")
 	status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	countdown_label = _label(menu_content, "", Vector2(0, 105), Vector2(1280, 38), 27, Color("#FFE28D"))
+	countdown_label = _label(column, "", &"TitleLabel", Color("#FFE28D"))
+	countdown_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	# Always reserve the countdown's height, so the team panels do not jump
+	# down the moment the numbers start.
+	countdown_label.custom_minimum_size = Vector2(0, 46)
 	if match_starting:
 		countdown_label.text = str(countdown_remaining)
-	countdown_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	var red_panel := _panel(menu_content, Vector2(54, 154), Vector2(564, 474), TEAM_RED)
-	var blue_panel := _panel(menu_content, Vector2(662, 154), Vector2(564, 474), TEAM_BLUE)
+	var teams := HBoxContainer.new()
+	teams.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	teams.add_theme_constant_override("separation", 28)
+	teams.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	column.add_child(teams)
+	var red_panel := _panel(TEAM_RED, 2)
+	var blue_panel := _panel(TEAM_BLUE, 2)
+	for panel in [red_panel, blue_panel]:
+		panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		teams.add_child(panel)
 	red_rows = _team_column(red_panel, "TEAM RED", TEAM_RED)
 	blue_rows = _team_column(blue_panel, "TEAM BLUE", TEAM_BLUE)
-	fill_label = _label(menu_content, "RED  1 / 10          BLUE  0 / 10", Vector2(0, 638), Vector2(1280, 28), 17)
+	var footer := HBoxContainer.new()
+	footer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	footer.add_theme_constant_override("separation", 16)
+	column.add_child(footer)
+	var customize := _button(footer, "CUSTOMIZE CHARACTER", func(): _open_customization("lobby"))
+	customize.custom_minimum_size = Vector2(260, 46)
+	fill_label = _label(footer, "RED  1 / 10          BLUE  0 / 10", &"HeaderLabel")
+	fill_label.add_theme_font_size_override("font_size", 18)
+	fill_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	fill_label.size_flags_vertical = Control.SIZE_FILL
 	fill_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_button(menu_content, "CUSTOMIZE CHARACTER", Vector2(42, 674), Vector2(258, 38), func(): _open_customization("lobby"))
-	_button(menu_content, "LEAVE QUEUE", Vector2(980, 674), Vector2(252, 38), _leave_lobby, false, Color("#FFA2B4"))
+	fill_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	var leave := _button(footer, "LEAVE QUEUE", _leave_lobby, Color("#FFA2B4"))
+	leave.custom_minimum_size = Vector2(260, 46)
+	customize.grab_focus.call_deferred()
 	_render_team_rows()
 
 
 func _team_column(panel: PanelContainer, heading: String, accent: Color) -> VBoxContainer:
 	var column := VBoxContainer.new()
-	column.add_theme_constant_override("separation", 4)
+	column.add_theme_constant_override("separation", 6)
 	panel.add_child(column)
-	var title := Label.new()
-	title.text = heading
-	title.add_theme_font_size_override("font_size", 23)
-	title.add_theme_color_override("font_color", accent)
-	column.add_child(title)
-	var note := Label.new()
-	note.text = "10 PLAYER SLOTS"
-	note.add_theme_font_size_override("font_size", 10)
-	note.add_theme_color_override("font_color", Color("#B2B5C7"))
-	column.add_child(note)
+	var header := HBoxContainer.new()
+	column.add_child(header)
+	var title := _label(header, heading, &"HeaderLabel", accent)
+	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var note := _label(header, "10 PLAYER SLOTS", &"DimLabel")
+	note.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	note.size_flags_vertical = Control.SIZE_FILL
 	var rows := VBoxContainer.new()
 	rows.add_theme_constant_override("separation", 3)
 	column.add_child(rows)
@@ -503,21 +581,13 @@ func _render_team_rows() -> void:
 		var ordinal := red_index if team == "RED" else blue_index
 		if team == "RED": red_index += 1
 		else: blue_index += 1
+		var is_local := str(player_record.id) == "local"
 		var row := PanelContainer.new()
-		row.custom_minimum_size = Vector2(520, 34)
-		var style := StyleBoxFlat.new()
-		style.bg_color = Color("#292333" if team == "RED" else "#1F2F3A", 0.92)
-		style.border_color = Color(_team_color(team), 0.95) if str(player_record.id) == "local" else Color("#56596B")
-		style.set_border_width_all(2 if str(player_record.id) == "local" else 1)
-		style.corner_radius_top_left = 4
-		style.corner_radius_top_right = 4
-		style.corner_radius_bottom_left = 4
-		style.corner_radius_bottom_right = 4
-		style.content_margin_left = 8
-		style.content_margin_right = 8
-		style.content_margin_top = 1
-		style.content_margin_bottom = 1
-		row.add_theme_stylebox_override("panel", style)
+		row.custom_minimum_size = Vector2(0, 34)
+		row.add_theme_stylebox_override("panel", UITheme.box(
+			Color("#292333" if team == "RED" else "#1F2F3A", 0.92),
+			Color(_team_color(team), 0.95) if is_local else Color("#56596B"),
+			2 if is_local else 1, 5, 10.0, 2.0))
 		var line := HBoxContainer.new()
 		line.add_theme_constant_override("separation", 10)
 		row.add_child(line)
@@ -525,17 +595,23 @@ func _render_team_rows() -> void:
 		icon.custom_minimum_size = Vector2(26, 27)
 		icon.team_color = _team_color(team)
 		line.add_child(icon)
+		if is_local:
+			line.add_child(_you_chip())
 		var name_label := Label.new()
-		name_label.text = str(player_record.name) + ("  •  YOU" if str(player_record.id) == "local" else "")
+		name_label.text = str(player_record.name)
 		name_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		name_label.add_theme_font_size_override("font_size", 13)
-		name_label.add_theme_color_override("font_color", Color("#FFFFFF") if str(player_record.id) == "local" else Color("#D5D8E4"))
+		# Long names are cut with "…" instead of pushing the slot number out.
+		name_label.clip_text = true
+		name_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+		name_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		name_label.add_theme_font_size_override("font_size", 14)
+		name_label.add_theme_color_override("font_color", Color("#FFFFFF") if is_local else Color("#D5D8E4"))
+		if is_local:
+			name_label.add_theme_font_override("font", UITheme.bold())
 		line.add_child(name_label)
-		var position_label := Label.new()
-		position_label.text = "%02d" % (ordinal + 1)
-		position_label.add_theme_font_size_override("font_size", 10)
-		position_label.add_theme_color_override("font_color", Color("#AEB3C5"))
-		line.add_child(position_label)
+		var position_label := _label(line, "%02d" % (ordinal + 1), &"DimLabel", Color("#AEB3C5"))
+		position_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		position_label.size_flags_vertical = Control.SIZE_FILL
 		target_rows.add_child(row)
 	for i in range(red_index, MAX_PER_TEAM): _empty_slot(red_rows, TEAM_RED)
 	for i in range(blue_index, MAX_PER_TEAM): _empty_slot(blue_rows, TEAM_BLUE)
@@ -545,21 +621,12 @@ func _render_team_rows() -> void:
 
 func _empty_slot(rows: VBoxContainer, tint: Color) -> void:
 	var slot := PanelContainer.new()
-	slot.custom_minimum_size = Vector2(520, 34)
-	var style := StyleBoxFlat.new()
-	style.bg_color = Color("#181B29", 0.64)
-	style.border_color = Color(tint, 0.18)
-	style.set_border_width_all(1)
-	style.corner_radius_top_left = 4
-	style.corner_radius_top_right = 4
-	style.corner_radius_bottom_left = 4
-	style.corner_radius_bottom_right = 4
-	slot.add_theme_stylebox_override("panel", style)
-	var label := Label.new()
-	label.text = "OPEN SLOT"
-	label.add_theme_font_size_override("font_size", 10)
-	label.add_theme_color_override("font_color", Color("#74788C"))
-	slot.add_child(label)
+	slot.custom_minimum_size = Vector2(0, 34)
+	# Padded like a filled row, so "OPEN SLOT" no longer sits against the edge.
+	slot.add_theme_stylebox_override("panel", UITheme.box(Color("#181B29", 0.64),
+		Color(tint, 0.18), 1, 5, 14.0, 2.0))
+	var label := _label(slot, "OPEN SLOT", &"DimLabel", Color("#74788C"))
+	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	rows.add_child(slot)
 
 
@@ -631,57 +698,96 @@ func _open_customization(return_to: String) -> void:
 	_fade_transition(_show_customization, true)
 
 
-func _show_customization() -> void:
+func _show_customization(animate := true) -> void:
 	current_screen = "customize"
 	_clear_screen()
-	var panel := _panel(menu_content, Vector2(24, 14), Vector2(430, 692), Color("#77EBDD"), 1)
-	var content := Control.new()
-	panel.add_child(content)
-	_label(content, "CHARACTER\nINSPECTION", Vector2(8, 4), Vector2(390, 78), 28)
-	_label(content, "DRAG TO ROTATE  •  ← / → TO INSPECT", Vector2(10, 82), Vector2(390, 23), 10, Color("#91E4DC"))
+	var column := _side_card(Color("#77EBDD"), 460.0, 14.0)
+	customize_panel = column.get_parent() as Control
+	column.add_theme_constant_override("separation", 8)
+	_title(column, "CHARACTER INSPECTION", Color("#77EBDD"), 28)
+	_label(column, "DRAG TO ROTATE  •  ← / → TO INSPECT", &"DimLabel", Color("#91E4DC"))
 	username_edit = LineEdit.new()
-	username_edit.position = Vector2(8, 112)
-	username_edit.size = Vector2(385, 38)
+	username_edit.custom_minimum_size = Vector2(0, 40)
 	username_edit.max_length = 16
 	username_edit.placeholder_text = "Enter username"
 	username_edit.text = _username()
 	username_edit.text_submitted.connect(_commit_username)
 	username_edit.focus_exited.connect(func(): _commit_username(username_edit.text))
-	content.add_child(username_edit)
-	_label(content, "LOADOUT CATEGORY", Vector2(10, 160), Vector2(350, 20), 12, Color("#E9B4DB"))
+	column.add_child(username_edit)
+
+	# Two columns side by side: the category list and that category's options.
+	var body := HBoxContainer.new()
+	body.add_theme_constant_override("separation", 14)
+	body.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	column.add_child(body)
+	var categories := VBoxContainer.new()
+	categories.add_theme_constant_override("separation", 6)
+	categories.custom_minimum_size = Vector2(150, 0)
+	body.add_child(categories)
+	_label(categories, "LOADOUT CATEGORY", &"DimLabel", Color("#E9B4DB"))
+	var focus_tab: Button = null
 	for index in CATEGORIES.size():
 		var category: String = CATEGORIES[index]
 		var allowed := Data.category_allows(customization, category)
-		var tab_text := ("›  " if selected_category == category else "") + category
-		var tab := _button(content, tab_text, Vector2(8, 184 + index * 38), Vector2(180, 33), func(): selected_category = category; _show_customization(), false, Color("#8CEADF"))
+		var tab := _button(categories, category, func(): selected_category = category; _show_customization(false))
+		tab.custom_minimum_size = Vector2(0, 36)
+		tab.add_theme_font_size_override("font_size", 14)
+		# Toggle mode draws the selected category in the theme's "pressed"
+		# style, instead of the old "›" text prefix that shifted the word.
+		tab.toggle_mode = true
+		tab.set_pressed_no_signal(selected_category == category)
 		if not allowed:
 			tab.add_theme_color_override("font_color", Color("#A2A3AF"))
-		elif selected_category == category:
-			tab.add_theme_color_override("font_color", Color("#9AF4E6"))
-	var category_title := _label(content, selected_category, Vector2(200, 160), Vector2(220, 22), 12, Color("#E9B4DB"))
+		if selected_category == category:
+			focus_tab = tab
+
+	var options := VBoxContainer.new()
+	options.add_theme_constant_override("separation", 6)
+	options.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	body.add_child(options)
+	var category_title := _label(options, selected_category, &"DimLabel", Color("#E9B4DB"))
 	category_title.clip_text = true
 	var allowed := Data.category_allows(customization, selected_category)
 	if not allowed:
 		var reason := "BODY COLOR IS FOR THE DEFAULT BEAN ONLY" if selected_category == "BODY COLORS" else "THIS COMPLETE SKIN DOES NOT SUPPORT THIS ACCESSORY"
-		_label(content, reason, Vector2(200, 185), Vector2(220, 58), 10, Color("#A0A2B0"))
+		var reason_label := _label(options, reason, &"BodyLabel", Color("#A0A2B0"))
+		reason_label.add_theme_font_size_override("font_size", 13)
+		# Wrap inside the column instead of running off the panel.
+		reason_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	else:
+		# A 2-column grid. Each cell is an equal share of the column's width,
+		# and each button WRAPS its text, so a long name like PAINTBALL
+		# SPLATTER goes onto two lines instead of widening into its neighbour.
+		var grid := GridContainer.new()
+		grid.columns = 2
+		grid.add_theme_constant_override("h_separation", 6)
+		grid.add_theme_constant_override("v_separation", 6)
+		options.add_child(grid)
 		var items := _options_for(selected_category)
 		for index in items.size():
 			var option_index := index
-			var col := index % 2
-			var row := index / 2
 			var item_text := str(items[index])
-			var item_button := _button(content, item_text, Vector2(200 + col * 98, 198 + row * 55), Vector2(94, 47), func(): _select_option(selected_category, option_index), false, Color("#8CEADF"))
-			item_button.add_theme_font_size_override("font_size", 9)
-			if _selected_option(selected_category) == option_index:
-				item_button.add_theme_color_override("font_color", Color("#9AF4E6"))
-				item_button.text = "✓ " + item_text
-	_label(content, "GUN SKIN IS A SEPARATE PAINT GUN PRESET", Vector2(10, 540), Vector2(400, 21), 10, Color("#A9B0C4"))
-	_button(content, "BACK", Vector2(10, 580), Vector2(374, 46), _return_from_customization, false, Color("#FF90BB"))
-	_label(content, "CURRENT SESSION ONLY", Vector2(10, 636), Vector2(370, 18), 10, Color("#858A9E"))
+			var chosen := _selected_option(selected_category) == option_index
+			var item_button := _button(grid, ("✓ " if chosen else "") + item_text, func(): _select_option(selected_category, option_index))
+			item_button.toggle_mode = true
+			item_button.set_pressed_no_signal(chosen)
+			item_button.alignment = HORIZONTAL_ALIGNMENT_CENTER
+			item_button.custom_minimum_size = Vector2(0, 44)
+			item_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			item_button.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			item_button.add_theme_font_size_override("font_size", 12)
+
+	_label(column, "GUN SKIN IS A SEPARATE PAINT GUN PRESET", &"DimLabel")
+	_button(column, "BACK", _return_from_customization, Color("#FF90BB"))
+	_label(column, "CURRENT SESSION ONLY", &"DimLabel", Color("#858A9E"))
 	preview.set_customization(customization)
-	menu_content.modulate.a = 0.0
-	_create_tween().tween_property(menu_content, "modulate:a", 1.0, 0.28)
+	if focus_tab != null:
+		focus_tab.grab_focus.call_deferred()
+	# Fade in when arriving on the page, but not on every option click - that
+	# made the whole panel flash each time.
+	if animate:
+		menu_content.modulate.a = 0.0
+		_create_tween().tween_property(menu_content, "modulate:a", 1.0, 0.28)
 
 
 func _options_for(category: String) -> Array:
@@ -711,7 +817,7 @@ func _select_option(category: String, option: int) -> void:
 		"BACK BLING": customization["back_bling"] = option
 	_commit_username(str(customization.get("username", "Player")))
 	preview.set_customization(customization)
-	_show_customization()
+	_show_customization(false)
 
 
 func _selected_option(category: String) -> int:
@@ -775,32 +881,45 @@ func _fade_camera_to_lobby() -> void:
 func _show_settings() -> void:
 	current_screen = "settings"
 	_clear_screen()
-	var card := _panel(menu_content, Vector2(36, 40), Vector2(430, 625), Color("#70DED5"), 1)
-	var content := Control.new()
-	card.add_child(content)
-	_label(content, "SETTINGS", Vector2(12, 22), Vector2(380, 58), 36)
-	_label(content, "MASTER VOLUME", Vector2(12, 112), Vector2(380, 24), 16)
+	var column := _side_card(Color("#70DED5"))
+	_title(column, "SETTINGS", Color("#70DED5"), 36)
+	_spacer(column, 12.0)
+
+	var volume_readout := _setting_row(column, "MASTER VOLUME")
 	var volume := HSlider.new()
-	volume.position = Vector2(12, 143)
-	volume.size = Vector2(365, 32)
+	volume.custom_minimum_size = Vector2(0, 28)
 	volume.min_value = 0
 	volume.max_value = 1
 	volume.step = 0.01
 	volume.value = volume_value
-	volume.value_changed.connect(func(value): volume_value = value; AudioServer.set_bus_volume_db(0, linear_to_db(maxf(value, 0.001))))
-	content.add_child(volume)
-	_label(content, "MOUSE SENSITIVITY", Vector2(12, 205), Vector2(380, 24), 16)
+	volume_readout.text = "%d%%" % int(round(volume_value * 100.0))
+	volume.value_changed.connect(func(value):
+		volume_value = value
+		AudioServer.set_bus_volume_db(0, linear_to_db(maxf(value, 0.001)))
+		volume_readout.text = "%d%%" % int(round(value * 100.0)))
+	column.add_child(volume)
+	_spacer(column, 10.0)
+
+	var sensitivity_readout := _setting_row(column, "MOUSE SENSITIVITY")
 	var sensitivity := HSlider.new()
-	sensitivity.position = Vector2(12, 236)
-	sensitivity.size = Vector2(365, 32)
+	sensitivity.custom_minimum_size = Vector2(0, 28)
 	sensitivity.min_value = 0.0005
 	sensitivity.max_value = 0.006
 	sensitivity.step = 0.0001
 	sensitivity.value = sensitivity_value
-	sensitivity.value_changed.connect(func(value): sensitivity_value = value)
-	content.add_child(sensitivity)
-	_button(content, "FULLSCREEN  %s" % ("ON" if fullscreen else "OFF"), Vector2(12, 310), Vector2(365, 48), func(): fullscreen = not fullscreen; DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN if fullscreen else DisplayServer.WINDOW_MODE_WINDOWED); _show_settings())
-	_button(content, "BACK", Vector2(12, 388), Vector2(365, 48), _show_main)
+	sensitivity_readout.text = _sensitivity_text(sensitivity_value)
+	sensitivity.value_changed.connect(func(value):
+		sensitivity_value = value
+		sensitivity_readout.text = _sensitivity_text(value))
+	column.add_child(sensitivity)
+	_spacer(column, 16.0)
+
+	fullscreen_toggle = _button(column, _fullscreen_text(), _toggle_fullscreen)
+	_spacer(column)
+	_button(column, "BACK", _show_main)
+	fullscreen_toggle.grab_focus.call_deferred()
+	menu_content.modulate.a = 0.0
+	_create_tween().tween_property(menu_content, "modulate:a", 1.0, 0.22)
 
 
 func _team_color(team: String) -> Color:
@@ -810,18 +929,21 @@ func _team_color(team: String) -> Color:
 func _unhandled_input(event: InputEvent) -> void:
 	if current_screen == "customize":
 		if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
-			dragging_character = event.pressed and event.position.x > 450
+			dragging_character = event.pressed and event.position.x > _customize_edge()
 		elif event is InputEventMouseMotion and dragging_character:
 			rotation_target += event.relative.x * 0.009
 		elif event.is_action_pressed("ui_left"):
 			rotation_target -= 0.65
 		elif event.is_action_pressed("ui_right"):
 			rotation_target += 0.65
+	# Esc means "back" on every page, the same as that page's BACK button.
 	if event.is_action_pressed("ui_cancel"):
 		if current_screen == "customize":
 			_return_from_customization()
 		elif current_screen == "settings":
 			_show_main()
+		elif current_screen == "mode_select":
+			_fade_transition(_show_main, false)
 		elif current_screen == "lobby":
 			_leave_lobby()
 
@@ -838,3 +960,145 @@ func _process(delta: float) -> void:
 	else:
 		preview_mount.rotation.y += delta * 0.08
 		preview_mount.position.y = 0.23 + sin(Time.get_ticks_msec() * 0.0012) * 0.035
+
+
+## The tall card that Main, Settings and Customize sit in. It is anchored to
+## the left edge from the top of the window to the bottom, so it always spans
+## the full height (minus a margin) at any window size, instead of stopping at
+## a fixed 625px. Returns the VBox inside it; the card is its parent.
+func _side_card(tint: Color, width := 430.0, margin := 40.0) -> VBoxContainer:
+	var card := _panel(tint, 1)
+	card.anchor_left = 0.0
+	card.anchor_right = 0.0
+	card.anchor_top = 0.0
+	card.anchor_bottom = 1.0
+	card.offset_left = 36.0
+	card.offset_right = 36.0 + width
+	card.offset_top = margin
+	card.offset_bottom = -margin
+	menu_content.add_child(card)
+	var column := VBoxContainer.new()
+	column.add_theme_constant_override("separation", 10)
+	card.add_child(column)
+	return column
+
+
+## A page heading with a painted brush stroke behind it. The stroke and the
+## label share one MarginContainer, which gives both the same rectangle, and the
+## label is added second so it draws on top.
+func _title(parent: Control, text_value: String, stroke: Color, font_size := 38, centered := false) -> Label:
+	var holder := MarginContainer.new()
+	holder.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	# SHRINK makes the holder only as wide as the heading's text, so the stroke
+	# ends where the word ends instead of running across the whole card.
+	holder.size_flags_horizontal = Control.SIZE_SHRINK_CENTER if centered else Control.SIZE_SHRINK_BEGIN
+	parent.add_child(holder)
+	var swash := BrushStroke.new()
+	swash.color = stroke
+	swash.seed_value = text_value.length()
+	holder.add_child(swash)
+	var label := _label(holder, text_value, &"TitleLabel")
+	label.add_theme_font_size_override("font_size", font_size)
+	return label
+
+
+## Empty space in a VBox. With no height it EXPANDS, pushing whatever follows
+## to the bottom of the card.
+func _spacer(parent: Control, height := 0.0) -> Control:
+	var gap := Control.new()
+	gap.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	gap.custom_minimum_size = Vector2(0, height)
+	if height <= 0.0:
+		gap.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	parent.add_child(gap)
+	return gap
+
+
+## A big mode button with its title and description INSIDE it. The old page
+## drew each description as a separate label on top of its button, so the two
+## overlapped. Here both texts are children of the button, laid out by a
+## container, so they cannot overlap; they ignore the mouse so clicks still
+## land on the button.
+func _mode_button(parent: Control, title_text: String, description: String, tag: String,
+		action: Callable, accent: Color) -> Button:
+	var button := _button(parent, "", action, accent)
+	button.custom_minimum_size = Vector2(0, 96)
+	var margin := MarginContainer.new()
+	margin.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	margin.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	margin.add_theme_constant_override("margin_left", 22)
+	margin.add_theme_constant_override("margin_right", 22)
+	margin.add_theme_constant_override("margin_top", 12)
+	margin.add_theme_constant_override("margin_bottom", 12)
+	button.add_child(margin)
+	var row := HBoxContainer.new()
+	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	row.add_theme_constant_override("separation", 16)
+	margin.add_child(row)
+	var column := VBoxContainer.new()
+	column.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	column.alignment = BoxContainer.ALIGNMENT_CENTER
+	column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(column)
+	var heading := _label(column, title_text, &"HeaderLabel", accent)
+	heading.add_theme_font_size_override("font_size", 22)
+	var body := _label(column, description, &"BodyLabel")
+	body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	var tag_label := _label(row, tag, &"DimLabel")
+	tag_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	tag_label.size_flags_vertical = Control.SIZE_FILL
+	return button
+
+
+## The small yellow "YOU" tag, matching the one on the in-match scoreboard.
+func _you_chip() -> PanelContainer:
+	var chip := PanelContainer.new()
+	chip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	chip.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	chip.add_theme_stylebox_override("panel", UITheme.box(Color(UITheme.WARN, 0.9),
+		Color(UITheme.WARN, 0.9), 0, 4, 6.0, 1.0))
+	var text := Label.new()
+	text.text = "YOU"
+	text.add_theme_font_size_override("font_size", 11)
+	text.add_theme_font_override("font", UITheme.heavy())
+	text.add_theme_color_override("font_color", UITheme.INK)
+	chip.add_child(text)
+	return chip
+
+
+## One settings heading with its current value shown on the right.
+## Returns the value label so the slider can keep it up to date.
+func _setting_row(parent: Control, caption: String) -> Label:
+	var row := HBoxContainer.new()
+	parent.add_child(row)
+	var name_label := _label(row, caption, &"HeaderLabel")
+	name_label.add_theme_font_size_override("font_size", 16)
+	name_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	return _label(row, "", &"SubLabel")
+
+
+## Sensitivity shown relative to the game's default (0.0022 = ×1.00), which
+## means something to a player, rather than as radians per pixel.
+func _sensitivity_text(value: float) -> String:
+	return "×%.2f" % (value / 0.0022)
+
+
+func _fullscreen_text() -> String:
+	return "FULLSCREEN  %s" % ("ON" if fullscreen else "OFF")
+
+
+## Updates the button's own text in place instead of rebuilding the page, so
+## toggling does not make the whole settings card flash.
+func _toggle_fullscreen() -> void:
+	fullscreen = not fullscreen
+	DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN if fullscreen else DisplayServer.WINDOW_MODE_WINDOWED)
+	if is_instance_valid(fullscreen_toggle):
+		fullscreen_toggle.text = _fullscreen_text()
+
+
+## Where the customize panel ends on screen. Drags to the right of it rotate
+## the character; presses on the panel itself belong to the panel's controls.
+func _customize_edge() -> float:
+	if customize_panel != null and is_instance_valid(customize_panel):
+		return customize_panel.get_global_rect().end.x
+	return 450.0

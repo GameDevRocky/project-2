@@ -25,6 +25,9 @@ extends Node3D
 ## "unfair" - dying should teach you the room, and a room reshuffled every run
 ## teaches you nothing.
 
+const SurfaceShader = preload("res://scripts/visual/arena_surface.gdshader")
+const PaintKit = preload("res://scripts/visual/paint_kit.gd")
+
 ## Half the width of the playable floor, in metres. The arena is 90m square.
 const ARENA_HALF := 45.0
 
@@ -69,6 +72,86 @@ const COVER_TEAL := Color("#3F8886")
 const COVER_PALE := Color("#CBC2D6")
 
 
+# --- Area identities -----------------------------------------------------------
+# Each area of the map gets a painted band on its walls in its own muted studio
+# colour, so you can tell where you are at a glance and learn the room faster.
+# These are the same "dried paint" colours as the decoration: dusty, never the
+# bright enemy or team colours.
+const BAND_NW := {"color": Color("#C9A45C"), "center": 2.3, "height": 0.36}    # paint storage, ochre
+const BAND_NE := {"color": Color("#9C8FC4"), "center": 2.6, "height": 0.36}    # mixing room, lilac
+const BAND_SW := {"color": Color("#B7806E"), "center": 2.2, "height": 0.36}    # gallery, clay
+const BAND_LANE := {"color": Color("#7FA9A3"), "center": -0.9, "height": 0.32} # runoff channel, sea-glass
+const BAND_PILLAR := {"color": Color("#B7B2C6"), "center": 3.75, "height": 0.5} # hub pillars: brush-handle ferrules
+const BAND_SKIRT := {"color": Color("#4E4870"), "center": 0.25, "height": 0.5}  # perimeter skirting
+
+
+## Set dressing: decoration only. NONE of it has collision, and every piece
+## sits where it cannot be walked into or change a sightline - flat on a wall
+## (at most 0.35 m deep), above head height, on top of an existing wall, or flat
+## on the floor. Each entry: model, position, turn about Y in degrees, scale.
+## Wall pieces are modelled facing +Z; the turn points them into the room.
+const DRESSING := [
+	# Central hub: a palette inlaid in the platform top, a sculpture far overhead.
+	["prop_palette_inlay", Vector3(0.0, 0.802, 0.0), 18.0, 1.0],
+	["prop_hub_mobile", Vector3(0.0, 8.7, 0.0), 0.0, 1.0],
+	# NW paint storage: paint can stacks on the tops of its walls.
+	["prop_can_stack", Vector3(-34.0, 3.8, -30.5), 0.0, 1.0],
+	["prop_can_stack", Vector3(-34.0, 3.8, -25.5), 70.0, 1.0],
+	["prop_can_stack", Vector3(-32.0, 3.8, -33.0), 20.0, 1.0],
+	# NE mixing room: mixing vats on its north wall.
+	["prop_mixing_vat", Vector3(23.0, 4.2, -34.0), 0.0, 1.0],
+	["prop_mixing_vat", Vector3(33.0, 4.2, -34.0), 140.0, 1.0],
+	# SW gallery: framed canvases on the inside of its west wall.
+	["prop_frame", Vector3(-37.6, 1.1, 31.0), 90.0, 1.0],
+	["prop_frame", Vector3(-37.6, 1.1, 34.8), 90.0, 1.0],
+	["prop_frame", Vector3(-37.6, 3.75, 24.0), 90.0, 1.0],
+	# South lane runoff channel: pipes along the top of the lane walls.
+	["prop_pipe_run", Vector3(7.5, -0.35, 24.0), -90.0, 1.0],
+	["prop_pipe_run", Vector3(7.5, -0.35, 34.0), -90.0, 1.0],
+	["prop_pipe_run", Vector3(-7.5, -0.35, 29.0), 90.0, 1.0],
+	# Perimeter: murals and banners high on the walls (above 4.5 m) ...
+	["prop_frame", Vector3(0.0, 5.0, -45.0), 0.0, 1.6],
+	["prop_frame", Vector3(0.0, 5.0, 45.0), 180.0, 1.6],
+	["prop_frame", Vector3(45.0, 5.0, 0.0), -90.0, 1.6],
+	["prop_frame", Vector3(-45.0, 5.0, 0.0), 90.0, 1.6],
+	["prop_banner", Vector3(-15.0, 8.7, -45.0), 0.0, 1.0],
+	["prop_banner", Vector3(15.0, 8.7, -45.0), 0.0, 1.0],
+	["prop_banner", Vector3(-18.0, 8.7, 45.0), 180.0, 1.0],
+	["prop_banner", Vector3(18.0, 8.7, 45.0), 180.0, 1.0],
+	["prop_banner", Vector3(45.0, 8.7, -15.0), -90.0, 1.0],
+	["prop_banner", Vector3(45.0, 8.7, 15.0), -90.0, 1.0],
+	["prop_banner", Vector3(-45.0, 8.7, -15.0), 90.0, 1.0],
+	["prop_banner", Vector3(-45.0, 8.7, 15.0), 90.0, 1.0],
+	# ... and giant art tools standing flush in the four corners.
+	["prop_giant_brush", Vector3(41.5, 0.0, -45.0), 0.0, 1.25],
+	["prop_paint_tube", Vector3(45.0, 0.0, -41.5), -90.0, 1.0],
+	["prop_paint_tube", Vector3(41.5, 0.0, 45.0), 180.0, 1.0],
+	["prop_giant_brush", Vector3(45.0, 0.0, 41.5), -90.0, 1.25],
+	["prop_giant_brush", Vector3(-41.5, 0.0, 45.0), 180.0, 1.25],
+	["prop_paint_tube", Vector3(-45.0, 0.0, 41.5), 90.0, 1.0],
+	["prop_paint_tube", Vector3(-41.5, 0.0, -45.0), 0.0, 1.0],
+	["prop_giant_brush", Vector3(-45.0, 0.0, -41.5), 90.0, 1.25],
+]
+
+## Old dried paint on the floor where fights happen (flat, 1 cm thick):
+## position, turn, scale. Matte studio colours, so they never read as fresh
+## gameplay paint.
+const FLOOR_STAINS := [
+	[Vector3(6.0, 0.0, -5.0), 10.0, 1.0], [Vector3(-6.5, 0.0, 4.5), 80.0, 1.2],
+	[Vector3(3.0, 0.0, 7.0), 200.0, 0.9], [Vector3(-4.0, 0.0, -7.0), 140.0, 1.1],
+	[Vector3(2.0, -2.4, 26.0), 30.0, 1.0], [Vector3(-3.0, -2.4, 36.0), 250.0, 1.3],
+	[Vector3(-28.0, 0.0, -21.5), 60.0, 1.0], [Vector3(-21.5, 0.0, -28.0), 300.0, 0.8],
+	[Vector3(28.0, 0.0, -19.0), 120.0, 1.1], [Vector3(19.0, 0.0, -27.0), 20.0, 0.9],
+	[Vector3(-17.0, 0.0, 28.0), 170.0, 1.2], [Vector3(20.0, 0.0, 0.0), 45.0, 1.0],
+	[Vector3(-20.0, 0.0, -3.0), 310.0, 1.1], [Vector3(0.0, 0.0, -22.0), 95.0, 1.3],
+	[Vector3(0.0, 0.0, 14.0), 225.0, 0.9], [Vector3(-28.0, 3.4, 25.0), 15.0, 1.0],
+]
+
+## Which area the boxes currently being built belong to (set around each
+## build step); decides the painted band and floor flecks of their material.
+var _surface: Dictionary = {}
+
+
 ## The cover pieces, as a plain list. Each entry is where it sits, how big it
 ## is, and what colour. Tuning the level means editing numbers in this table.
 const COVER := [
@@ -98,6 +181,7 @@ func _ready() -> void:
 	_build_cover()
 	_build_sunken_route()
 	_build_buildings()
+	_build_dressing()
 
 
 ## The sky and the global lighting settings. A WorldEnvironment node holds an
@@ -140,6 +224,14 @@ func _build_environment() -> void:
 	# 0 = "none of the ambient comes from the sky". Only matters if the source
 	# above is ever switched back to the sky, but it keeps intent obvious.
 	env.ambient_light_sky_contribution = 0.0
+
+	# Screen-space ambient occlusion: soft contact shadow where things meet -
+	# cover on the floor, props against walls, a character's feet. It gives
+	# the room depth without making anything darker overall. Forward+ only;
+	# the web (Compatibility) renderer simply ignores it.
+	env.ssao_enabled = true
+	env.ssao_radius = 1.2
+	env.ssao_intensity = 1.4
 
 	# Glow makes bright things bleed light into their surroundings. The paint
 	# globs, the enemy bodies and the dropped cores all use emissive materials,
@@ -223,6 +315,8 @@ func _build_light() -> void:
 func _build_floor() -> void:
 	# Leave a cutout for the recessed lower route; every section retains the
 	# original collision-backed box floor.
+	# Floors get the scattered dried-paint flecks of a well-used studio floor.
+	_surface = {"fleck": 0.3}
 	var span := ARENA_HALF * 2.0
 	var north_depth := PIT_NORTH + ARENA_HALF
 	_add_solid(Vector3(0.0, -0.5, (-ARENA_HALF + PIT_NORTH) * 0.5),
@@ -236,12 +330,15 @@ func _build_floor() -> void:
 		(PIT_NORTH + PIT_SOUTH) * 0.5), Vector3(side_width, 1.0, side_depth), FLOOR_COLOR, 0.95)
 	_add_solid(Vector3((ARENA_HALF + PIT_HALF_WIDTH) * 0.5, -0.5,
 		(PIT_NORTH + PIT_SOUTH) * 0.5), Vector3(side_width, 1.0, side_depth), FLOOR_COLOR, 0.95)
+	_surface = {}
 
 
 func _build_walls() -> void:
 	var span: float = ARENA_HALF * 2.0
 	var offset: float = ARENA_HALF + WALL_THICKNESS * 0.5
 	var wall_color := WALL_COLOR
+	# A darker skirting along the foot of the outer walls grounds them.
+	_surface = {"band": BAND_SKIRT}
 
 	# North and south.
 	_add_solid(Vector3(0.0, WALL_HEIGHT * 0.5, -offset),
@@ -259,6 +356,7 @@ func _build_walls() -> void:
 	# would think, and a player who clips over a wall is a run ended by a bug.
 	_add_solid(Vector3(0.0, WALL_HEIGHT + 0.5, 0.0),
 		Vector3(span, 1.0, span), wall_color, 0.9, false)
+	_surface = {}
 
 
 func _build_cover() -> void:
@@ -269,12 +367,18 @@ func _build_cover() -> void:
 		# actually think about placing cover. Boxes are centred on their origin,
 		# so lift each one by half its height to stand it on the floor.
 		var centre: Vector3 = pos + Vector3(0.0, size.y * 0.5, 0.0)
+		# The four tall hub pillars get a metal ferrule band near the top, so
+		# they read as giant brush handles planted round the centre.
+		_surface = {"band": BAND_PILLAR} if piece["color"] == "charcoal" else {}
 		_add_solid(centre, size, _palette(piece["color"]), 0.9)
+	_surface = {}
 
 
 func _build_sunken_route() -> void:
+	_surface = {"fleck": 0.3}
 	_add_solid(Vector3(0.0, -PIT_DEPTH - 0.5, (PIT_NORTH + PIT_SOUTH) * 0.5),
 		Vector3(PIT_HALF_WIDTH * 2.0, 1.0, PIT_SOUTH - PIT_NORTH), FLOOR_COLOR, 0.95)
+	_surface = {"band": BAND_LANE}
 	# Retaining-wall openings align with collision-backed ramps at either end.
 	for end_z in [PIT_NORTH + 0.1, PIT_SOUTH - 0.1]:
 		for side_x in [-5.3, 5.3]:
@@ -290,21 +394,25 @@ func _build_sunken_route() -> void:
 		Vector3(0.5, 2.4, PIT_SOUTH - PIT_NORTH), COVER_SLATE, 0.9)
 	_add_solid(Vector3(0.0, -1.55, 27.0), Vector3(4.5, 1.7, 0.7), COVER_TEAL, 0.9)
 	_add_solid(Vector3(-3.5, -1.55, 33.0), Vector3(4.5, 1.7, 0.7), COVER_ROSE, 0.9)
+	_surface = {}
 
 
 func _build_buildings() -> void:
 	# Northwest compact room: three exits support quick close-range flanks.
+	_surface = {"band": BAND_NW}
 	_build_room_shell(Vector3(-28.0, 0.0, -28.0), 12.0, 10.0, 3.8,
 		COVER_PALE, [&"north", &"south", &"east"])
 	_add_solid(Vector3(-34.0, 2.8, -28.0), Vector3(0.35, 0.45, 3.0), COVER_ROSE, 0.8)
 	_add_solid(Vector3(-22.0, 2.8, -28.0), Vector3(0.35, 0.45, 3.0), COVER_TEAL, 0.8)
 
 	# Northeast two-room building, open to west, east, and south approaches.
+	_surface = {"band": BAND_NE}
 	_build_room_shell(Vector3(28.0, 0.0, -27.0), 17.0, 14.0, 4.2,
 		COVER_SAGE, [&"south", &"west", &"east"])
 	_build_partition(Vector3(28.0, 0.0, -29.0), 12.0, 3.4, 0.55, COVER_SLATE)
 
 	# Southwest building: multiple ground exits, raised firing lane, walk-up ramp.
+	_surface = {"band": BAND_SW}
 	_build_room_shell(Vector3(-28.0, 0.0, 28.0), 20.0, 18.0, 5.0,
 		COVER_ROSE, [&"north", &"east", &"south"])
 	_add_solid(Vector3(-28.0, 3.2, 24.0), Vector3(14.0, 0.4, 8.0), COVER_PALE, 0.85)
@@ -314,6 +422,7 @@ func _build_buildings() -> void:
 		true, Vector3(21.8, 0.0, 0.0))
 	_add_solid(Vector3(-34.5, 3.75, 25.0), Vector3(0.35, 0.8, 5.0), COVER_SAGE, 0.85)
 	_add_solid(Vector3(-27.0, 3.75, 20.2), Vector3(13.0, 0.8, 0.35), COVER_SAGE, 0.85)
+	_surface = {}
 
 
 func _build_room_shell(center: Vector3, width: float, depth: float, height: float,
@@ -443,15 +552,67 @@ func _add_solid(centre: Vector3, size: Vector3, box_color: Color,
 		box.size = size
 		mesh_node.mesh = box
 
-		var mat := StandardMaterial3D.new()
-		mat.albedo_color = box_color
-		mat.roughness = roughness
-		mat.metallic = 0.0
-		mesh_node.material_override = mat
+		mesh_node.material_override = _surface_material(box_color, roughness, size)
 
 		body.add_child(mesh_node)
 
 	add_child(body)
+
+
+## The painted-studio surface for one box: the flat colour this file always
+## used, plus the canvas weave, edge shading, and the current area's band or
+## floor flecks (scripts/visual/arena_surface.gdshader). Only how the box LOOKS
+## changes; its collision is built separately above.
+func _surface_material(box_color: Color, roughness: float, size: Vector3) -> Material:
+	var mat := ShaderMaterial.new()
+	mat.shader = SurfaceShader
+	mat.set_shader_parameter("albedo", box_color)
+	mat.set_shader_parameter("roughness_value", roughness)
+	mat.set_shader_parameter("box_size", size)
+	mat.set_shader_parameter("fleck_amount", float(_surface.get("fleck", 0.0)))
+	if _surface.has("band"):
+		var band: Dictionary = _surface["band"]
+		mat.set_shader_parameter("band_color", Color(band["color"], 0.85))
+		mat.set_shader_parameter("band_center", float(band["center"]))
+		mat.set_shader_parameter("band_height", float(band["height"]))
+	return mat
+
+
+## Places the decoration from DRESSING and FLOOR_STAINS. Visual nodes only:
+## nothing here adds a physics body, so movement, cover and sightlines are
+## exactly as before. Skipped quietly if the generated models are missing.
+func _build_dressing() -> void:
+	# Load the paint glob and splat models now, during setup, instead of at
+	# the first shot of the match (which caused a brief stutter).
+	PaintKit.warm_up()
+	var dressing := Node3D.new()
+	dressing.name = "Dressing"
+	add_child(dressing)
+	for entry in DRESSING:
+		var prop := PaintKit.instance(entry[0])
+		if prop == null:
+			continue
+		dressing.add_child(prop)
+		prop.position = entry[1]
+		prop.rotation.y = deg_to_rad(entry[2])
+		prop.scale = Vector3.ONE * float(entry[3])
+		# Flat pieces hung on walls or laid on the floor throw no visible
+		# shadow, so skip drawing them into the shadow maps at all.
+		if entry[0] in ["prop_frame", "prop_banner", "prop_pipe_run", "prop_palette_inlay"]:
+			PaintKit.set_shadows(prop, false)
+	for i in FLOOR_STAINS.size():
+		var stain_mesh := PaintKit.mesh("prop_splat_decor", "Decor_%d" % (i % 4))
+		if stain_mesh == null:
+			break
+		var stain := MeshInstance3D.new()
+		stain.mesh = stain_mesh
+		stain.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		dressing.add_child(stain)
+		var entry: Array = FLOOR_STAINS[i]
+		# A hair above the floor so the two surfaces never flicker.
+		stain.position = entry[0] + Vector3(0.0, 0.004, 0.0)
+		stain.rotation.y = deg_to_rad(entry[1])
+		stain.scale = Vector3.ONE * float(entry[2])
 
 
 ## Hands game.gd a ring of positions to spawn enemies at, spread evenly around

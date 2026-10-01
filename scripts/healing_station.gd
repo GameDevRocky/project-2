@@ -17,6 +17,7 @@ enum StationState { READY, INTERACTING, COOLDOWN }
 ## once it is connected if a player must carry a power to use this station.
 @export var require_power_to_trade: bool = false
 
+const PaintKit = preload("res://scripts/visual/paint_kit.gd")
 const READY_COLOR := Color("#36E6D2")
 const COOLDOWN_COLOR := Color("#536C70")
 
@@ -29,6 +30,7 @@ var _cooldown_elapsed: float = 0.0
 var _ring: MeshInstance3D
 var _status: Label3D
 var _core_material: StandardMaterial3D
+var _glow_time: float = 0.0
 
 
 func _ready() -> void:
@@ -49,6 +51,7 @@ func _ready() -> void:
 
 
 func _process(delta: float) -> void:
+	_animate_glow(delta)
 	match _state:
 		StationState.COOLDOWN:
 			_cooldown_elapsed -= delta
@@ -82,11 +85,20 @@ func _process(delta: float) -> void:
 
 
 func _build_visuals() -> void:
-	var base_material := _material(Color("#E9EDF0"))
 	_core_material = _material(READY_COLOR)
-	_add_box("Base", Vector3(1.0, 0.18, 1.0), Vector3(0.0, 0.09, 0.0), base_material)
-	_add_box("Pedestal", Vector3(0.48, 0.78, 0.48), Vector3(0.0, 0.57, 0.0), base_material)
-	_add_box("HealingCore", Vector3(0.62, 0.16, 0.62), Vector3(0.0, 0.87, 0.0), _core_material)
+	# The "Paint Restoration Station" model: an easel holding a palette of
+	# glowing paint and a canvas with a plus sign. Both glowing parts use
+	# _core_material - the same material _set_state() recolours for READY and
+	# COOLDOWN - so the state colours work exactly as before.
+	var model := PaintKit.instance("healing_station")
+	if model != null:
+		add_child(model)
+		PaintKit.paint(model, READY_COLOR, Color.WHITE, false, {"PK_StationGlow": _core_material})
+	else:
+		var base_material := _material(Color("#E9EDF0"))
+		_add_box("Base", Vector3(1.0, 0.18, 1.0), Vector3(0.0, 0.09, 0.0), base_material)
+		_add_box("Pedestal", Vector3(0.48, 0.78, 0.48), Vector3(0.0, 0.57, 0.0), base_material)
+		_add_box("HealingCore", Vector3(0.62, 0.16, 0.62), Vector3(0.0, 0.87, 0.0), _core_material)
 	var ring_mesh := TorusMesh.new()
 	ring_mesh.inner_radius = 0.42
 	ring_mesh.outer_radius = 0.48
@@ -104,6 +116,17 @@ func _build_visuals() -> void:
 	_status.pixel_size = 0.004
 	_status.modulate = Color("#24353B")
 	add_child(_status)
+
+
+## A slow "breathing" glow on the paint while the station is READY, so it
+## reads as available from across the room. Only the glow strength changes;
+## the colours are still set by _set_state().
+func _animate_glow(delta: float) -> void:
+	_glow_time += delta
+	if _state == StationState.READY:
+		_core_material.emission_energy_multiplier = 0.9 + sin(_glow_time * 2.2) * 0.35
+	else:
+		_core_material.emission_energy_multiplier = 0.45
 
 
 func _material(color: Color) -> StandardMaterial3D:

@@ -123,7 +123,10 @@ is fixed, never randomised — dying should teach you the room.
 | **Survival game logic** | `scripts/game.gd` | Waves, Survival spawning, inherit offer, Survival endings |
 | **TDM match state** | `scripts/tdm_match_controller.gd` | Lobby roster, teams, TDM bot spawning, score, timer, respawn, scoreboard/results |
 | **Survival UX** | `scripts/hud.gd` | Survival HUD and Survival end panel |
-| **TDM UX** | `scripts/tdm_match_controller.gd` | TDM score/timer HUD, live scoreboard, TDM result panel |
+| **TDM UX** | `scripts/tdm_match_controller.gd` → `scripts/ui/tdm_hud.gd`, `tdm_scoreboard.gd` | The controller owns every TDM number and creates the HUD; the HUD files only draw (score/timer pill, crosshair, health, paint tank, pair card, respawn overlay, Tab scoreboard, result panel) |
+| **Shared UI** | `scripts/ui/ui_theme.gd`, `scripts/ui/widgets/` | One theme and the HUD widgets used by menu, Survival HUD and TDM HUD. Read-only views of player/controller state |
+| **Presentation** | `scripts/visual/`, `models/generated/` | Combatant/core/station/arena models, effects, surface shader. Visual children only — never collision, never gameplay numbers |
+| **Model sources** | `tools/blender/` | Blender Python scripts that generate `models/generated/*.glb` (`tools/blender/build_all.sh`) |
 | **Networking** | Not implemented | Replace local simulated lobby records and bot actors with session-backed player records/actors later |
 
 The offline TDM controller is the current authority for TDM-only match state.
@@ -206,12 +209,29 @@ The game can be driven without a human at the keyboard:
 
 ```
 GODOT="C:/Users/jlion/Downloads/Godot_v4.7.2-stable_win64.exe/Godot_v4.7.2-stable_win64_console.exe"
-"$GODOT" --headless --path . --quit-after 18000 -- --autoplay
+"$GODOT" --headless --path . res://scenes/match.tscn --quit-after 18000 -- --autoplay
 ```
+
+The main scene is the menu, so the command names `res://scenes/match.tscn` to
+start Survival directly (without it, the run just sits on the menu).
 
 `tools/autoplay.gd` fakes a player — aims, burst-fires, strafes, grabs cores —
 and prints a trace of every wave, kill and inheritance. It is only created when
 that flag is passed. Use `--verbose` for the logging without the bot.
 
 The bot is deliberately mediocre and dies around wave 3–4 of 6. That is the
-tuning target, not a bug.
+tuning target, not a bug. (Since the arena grew, an enemy can occasionally get
+pinned against the centre platform or in the south lane and stall a wave; that
+is pre-existing enemy steering, not a regression.)
+
+More tools in `tools/tests/` (run with `--script res://tools/tests/<name>.gd`):
+
+| Tool | What it checks |
+| --- | --- |
+| `survival_checklist.gd` | The Survival regression list as PASS/FAIL, through all six waves (headless) |
+| `tdm_checklist.gd` | The TDM regression list as PASS/FAIL, entered through the real menu (headless, ~75 s) |
+| `tdm_probe.gd` | A 2×10 TDM match with the autoplay bot, printing scores and K/D/A (`--shorten=N`, `--tab`) |
+| `menu_flow_probe.gd` | PLAY → TDM / Survival through the menu; reports which HUD exists |
+| `perf_probe.gd` | TDM frame rate, draw calls, physics time and hitches (windowed or headless) |
+| `screenshots.gd` | PNGs of every menu page, both HUDs, scoreboard, result, a model showcase and arena views (windowed; `--rendering-method gl_compatibility` for the web renderer) |
+| `model_viewer.gd` | The generated models under in-game lighting (windowed) |

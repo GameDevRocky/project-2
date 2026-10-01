@@ -21,6 +21,19 @@ extends Node3D
 ## tunnelling is impossible by construction rather than by careful tuning.
 
 
+const PaintKit = preload("res://scripts/visual/paint_kit.gd")
+
+## Surface splats alive at once. Past this, the oldest is removed early, so a
+## long fight can never pile up thousands of them.
+const MAX_SPLATS := 64
+## Seconds a splat stays fully visible before it starts to fade.
+const SPLAT_HOLD := 4.5
+const SPLAT_FADE := 1.5
+
+## Every live splat, oldest first. `static` = shared by all globs.
+static var _live_splats: Array[Node3D] = []
+
+
 # --- Set by whoever fires this, via setup() below ---------------------------
 
 ## Direction of travel. Always a unit vector (length exactly 1) so that speed is
@@ -54,6 +67,11 @@ var color: Color = Color.WHITE
 var life: float = 4.0
 var attacker = null
 var attacker_team := ""
+## The player who fired this glob, if any. Used ONLY to tell them "you hit
+## something" for the crosshair hit marker; the damage code never reads it.
+var source_player = null
+## Set when this glob damaged anything, directly or by splash.
+var _hit_landed := false
 
 
 # --- Physics layer numbers, named so the code reads clearly -----------------
@@ -103,6 +121,12 @@ func setup(from: Vector3, dir: Vector3, fired_by_player: bool) -> void:
 		target_group = "tdm_combatants"
 		hit_mask = LAYER_WORLD | LAYER_PLAYER | LAYER_ENEMY
 
+	# Point the glob's teardrop along its flight path. Purely visual: the
+	# movement below uses `direction`, never this node's rotation.
+	if direction.length() > 0.001:
+		var up := Vector3.UP if absf(direction.y) < 0.98 else Vector3.RIGHT
+		look_at(global_position + direction, up)
+
 
 func configure_tdm(source, team_name: String) -> void:
 	attacker = source
@@ -111,35 +135,22 @@ func configure_tdm(source, team_name: String) -> void:
 
 func _ready() -> void:
 	add_to_group("projectiles")
-	# Build the visible glob in code: a small sphere that glows slightly so it
-	# reads clearly against the pale arena.
+	# The visible glob: the generated teardrop (models/generated/paint_glob.glb),
+	# one mesh shared by every glob so dozens in flight cost almost nothing.
+	# Falls back to the original low-poly sphere if the model is missing.
 	var mesh_node := MeshInstance3D.new()
-	var sphere := SphereMesh.new()
-	sphere.radius = 0.14
-	sphere.height = 0.28
-	# radial_segments/rings control how many triangles the ball is made of.
-	# Low numbers keep it faceted, which suits the GDD's "low-poly" direction
-	# and costs almost nothing to draw even with dozens on screen.
-	sphere.radial_segments = 8
-	sphere.rings = 4
-	mesh_node.mesh = sphere
+	var glob_mesh := PaintKit.mesh("paint_glob", "Glob")
+	if glob_mesh != null:
+		mesh_node.mesh = glob_mesh
+	else:
+		var sphere := SphereMesh.new()
+		sphere.radius = 0.14
+		sphere.height = 0.28
+		sphere.radial_segments = 8
+		sphere.rings = 4
+		mesh_node.mesh = sphere
 
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = color
-	# An emission makes the material give off its own light-like glow, so the
-	# glob stays readable even in shadow. It does not actually light the world.
-	#
-	# The glob used to be UNSHADED as well. Unshaded draws the plain albedo
-	# colour and nothing else - Godot skips emission entirely in that mode - so
-	# the glow set here was never actually drawn. Leaving the glob lit lets the
-	# emission through: strong enough to push it past the arena's glow
-	# threshold, so incoming paint carries a halo you can track and dodge.
-	mat.emission_enabled = true
-	mat.emission = color
-	mat.emission_energy_multiplier = 1.8
-	# Ignore the arena's distance haze, so a glob fired from across the room is
-	# as crisp as one fired from next to you.
-	mat.disable_fog = true
+	var mat := glob_material(color)
 	mesh_node.material_override = mat
 
 	add_child(mesh_node)
@@ -187,7 +198,7 @@ func _physics_process(delta: float) -> void:
 			continue
 		break
 	if hit:
-		_impact(hit["position"], hit["collider"])
+		_impact(hit["position"], hit["collider"], hit["normal"])
 		return
 
 	_previous_position = global_position
@@ -196,7 +207,7 @@ func _physics_process(delta: float) -> void:
 
 ## Runs once, at the moment the glob touches something.
 ## `what` is the node the ray crossed - a wall, an enemy, or the player.
-func _impact(at: Vector3, what) -> void:
+func _impact(at: Vector3, what, normal: Vector3 = Vector3.UP) -> void:
 	_spent = true
 
 	# Direct damage. is_in_group() checks the node was tagged with add_to_group,
@@ -209,6 +220,7 @@ func _impact(at: Vector3, what) -> void:
 		friendly_hit = str(what.get("tdm_team")) == attacker_team
 	if what != null and not friendly_hit and what.is_in_group(target_group) and what.has_method("take_damage"):
 		what.take_damage(damage, attacker)
+		_hit_landed = true
 
 	# Splash damage, if the shooter's inherited pair grants it. This is a plain
 	# distance check against everything in the target group rather than a
@@ -217,7 +229,10 @@ func _impact(at: Vector3, what) -> void:
 	if splash_radius > 0.0:
 		_splash(at, what)
 
-	_spawn_splat(at)
+	if _hit_landed and source_player != null and is_instance_valid(source_player):
+		source_player.confirm_hit()
+
+	_spawn_splat(at, normal, what)
 	queue_free()
 
 
@@ -249,14 +264,150 @@ func _splash(at: Vector3, already_hit) -> void:
 		# better than every other pair instead of a trade-off.
 		var falloff: float = 1.0 - (distance / splash_radius)
 		target.take_damage(splash_damage * falloff, attacker)
+		_hit_landed = true
 
 	_spawn_burst(at)
 
 
-## Leaves a flat disc of paint where the glob landed, which fades out. Pure
-## decoration - it is what makes the arena visibly get messier as a fight goes
-## on, which is the whole "clean up canvas-like battlefields" idea from the GDD.
-func _spawn_splat(at: Vector3) -> void:
+## Leaves a splat of paint on the surface the glob hit, which later fades.
+## Pure decoration - it is what makes the arena visibly get messier as a fight
+## goes on, the "clean up canvas-like battlefields" idea from the GDD.
+##
+## The splat lies FLAT on the surface: the ray that found the hit also returns
+## the surface's normal (the direction it faces), and the splat is turned to
+## face the same way, lifted 1.2 cm off it so it neither floats visibly nor
+## flickers inside the wall. Only world surfaces get splats. A hit on an enemy
+## or a player gets a quick puff instead, because a splat left at that spot
+## would hang in mid-air the moment the target moved.
+func _spawn_splat(at: Vector3, normal: Vector3, what) -> void:
+	if what != null and (what.is_in_group("enemies") or what.is_in_group("player")
+			or what.is_in_group("tdm_combatants")):
+		_spawn_puff(at)
+		return
+	var splat_mesh := PaintKit.mesh("paint_splat", "Splat_%d" % randi_range(0, 3))
+	if splat_mesh == null:
+		_spawn_blob_splat(at)
+		return
+
+	var splat := MeshInstance3D.new()
+	splat.mesh = splat_mesh
+	splat.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	var mat := splat_material(color)
+	splat.material_override = mat
+	get_parent().add_child(splat)
+
+	# The splat model lies in its local XZ plane with +Y as its "up". Turn +Y
+	# onto the surface normal, then spin it randomly around that normal so no
+	# two splats look identical.
+	var up := normal.normalized() if normal.length() > 0.01 else Vector3.UP
+	var facing := Basis(Vector3.RIGHT, PI) if up.dot(Vector3.UP) < -0.999 else Basis(Quaternion(Vector3.UP, up))
+	facing = facing * Basis(Vector3.UP, randf() * TAU)
+	var size := randf_range(0.8, 1.2)
+	splat.global_transform = Transform3D(facing, at + up * 0.012)
+	splat.scale = Vector3.ONE * size * 0.6
+
+	_live_splats.append(splat)
+	_trim_splats()
+
+	var tween := splat.create_tween()
+	tween.tween_property(splat, "scale", Vector3.ONE * size, 0.12)
+	tween.tween_interval(SPLAT_HOLD)
+	tween.tween_property(mat, "albedo_color:a", 0.0, SPLAT_FADE)
+	tween.tween_callback(splat.queue_free)
+
+
+# --- Effect materials --------------------------------------------------------
+
+## The glob in flight. An emission makes it give off its own light-like glow,
+## so it stays readable even in shadow (it does not actually light the world).
+## It is lit rather than UNSHADED on purpose: unshaded skips emission entirely,
+## and the glow is what pushes the glob past the arena's glow threshold, so
+## incoming paint carries a halo you can track and dodge. Fog is off so a glob
+## fired from across the room is as crisp as one fired from next to you.
+static func glob_material(c: Color) -> StandardMaterial3D:
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = c
+	mat.emission_enabled = true
+	mat.emission = c
+	mat.emission_energy_multiplier = 1.8
+	mat.disable_fog = true
+	return mat
+
+# Built by static functions so scripts/visual/shader_warmup.gd can draw these
+# exact materials once while the match loads. The web renderer compiles each
+# kind of material the first time it is drawn, which froze the game for
+# ~140 ms at the first hit of a match; warming them up moves that to loading.
+
+## A fresh splat: shaded wet paint with a faint glow, so it reads apart from
+## the room's matte dried-paint decoration.
+static func splat_material(c: Color) -> StandardMaterial3D:
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = c
+	mat.roughness = 0.18
+	mat.emission_enabled = true
+	mat.emission = c
+	mat.emission_energy_multiplier = 0.25
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.disable_fog = true
+	return mat
+
+
+## The quick puff where a glob hits a body.
+static func puff_material(c: Color) -> StandardMaterial3D:
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(c.r, c.g, c.b, 0.7)
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.disable_fog = true
+	return mat
+
+
+## The Splatter Rounds splash sphere. Only its inside faces are drawn, so it
+## reads as a soft cloud you look into rather than an opaque ball.
+static func burst_material(c: Color) -> StandardMaterial3D:
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(c.r, c.g, c.b, 0.45)
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.cull_mode = BaseMaterial3D.CULL_FRONT
+	mat.disable_fog = true
+	return mat
+
+
+## Keeps the number of splats bounded: drop freed ones from the list, then
+## remove the oldest until we are back under the cap.
+static func _trim_splats() -> void:
+	_live_splats = _live_splats.filter(func(n): return is_instance_valid(n))
+	while _live_splats.size() > MAX_SPLATS:
+		var oldest: Node3D = _live_splats.pop_front()
+		if is_instance_valid(oldest):
+			oldest.queue_free()
+
+
+## A small burst of paint where a glob hits a body, gone in a fifth of a second.
+func _spawn_puff(at: Vector3) -> void:
+	var puff := MeshInstance3D.new()
+	var ball := SphereMesh.new()
+	ball.radius = 1.0
+	ball.height = 2.0
+	ball.radial_segments = 10
+	ball.rings = 5
+	puff.mesh = ball
+	puff.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	var mat := puff_material(color)
+	puff.material_override = mat
+	get_parent().add_child(puff)
+	puff.global_position = at
+	puff.scale = Vector3.ONE * 0.06
+	var tween := puff.create_tween()
+	tween.set_parallel(true)
+	tween.tween_property(puff, "scale", Vector3.ONE * 0.32, 0.16)
+	tween.tween_property(mat, "albedo_color:a", 0.0, 0.2)
+	tween.chain().tween_callback(puff.queue_free)
+
+
+## The original squashed-sphere splat, used only if the splat model is missing.
+func _spawn_blob_splat(at: Vector3) -> void:
 	var splat := MeshInstance3D.new()
 	var quad := SphereMesh.new()
 	quad.radius = 0.35
@@ -264,28 +415,14 @@ func _spawn_splat(at: Vector3) -> void:
 	quad.radial_segments = 7
 	quad.rings = 3
 	splat.mesh = quad
-
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color = color
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	# Transparency has to be switched on explicitly before an alpha value in
-	# albedo_color will do anything at all.
 	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	# Fog on a see-through material still tints it even as it fades out, which
-	# would leave a faint lavender ghost where the splat was. Paint stays paint.
 	mat.disable_fog = true
 	splat.material_override = mat
-
-	# Add the splat to the level rather than to this glob - this glob is about
-	# to delete itself, and a child always dies with its parent.
 	get_parent().add_child(splat)
 	splat.global_position = at
-
-	# A Tween animates values over time. This one grows the splat slightly and
-	# fades it to fully transparent, then deletes it. tween_property takes the
-	# property path as a string, the value to reach, and how many seconds.
-	# set_parallel makes the two animations run at the same time instead of
-	# one after the other.
 	var tween := splat.create_tween()
 	tween.set_parallel(true)
 	tween.tween_property(splat, "scale", Vector3(1.6, 0.6, 1.6), 0.25)
@@ -304,14 +441,7 @@ func _spawn_burst(at: Vector3) -> void:
 	ball.rings = 6
 	ring.mesh = ball
 
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(color.r, color.g, color.b, 0.45)
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	# Drawing only the inside faces of the sphere makes it read as a soft cloud
-	# you are looking into, rather than a hard opaque ball blocking your view.
-	mat.cull_mode = BaseMaterial3D.CULL_FRONT
-	mat.disable_fog = true
+	var mat := burst_material(color)
 	ring.material_override = mat
 
 	get_parent().add_child(ring)

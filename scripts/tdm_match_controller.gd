@@ -4,11 +4,13 @@ extends Node
 ## this controller owns the local match simulation and can later be replaced by
 ## an authoritative session implementation without changing the HUD contract.
 const EnemyScript = preload("res://scripts/enemy.gd")
+const UITheme = preload("res://scripts/ui/ui_theme.gd")
+const HudScript = preload("res://scripts/ui/tdm_hud.gd")
 const MATCH_SECONDS := 600.0
 const RESPAWN_SECONDS := 3.0
 const ASSIST_WINDOW := 8.0
-const RED := Color("#FF627E")
-const BLUE := Color("#58D7F2")
+const RED := UITheme.TEAM_RED
+const BLUE := UITheme.TEAM_BLUE
 
 var game
 var local_player
@@ -19,13 +21,15 @@ var scores := {"RED": 0, "BLUE": 0}
 var remaining := MATCH_SECONDS
 var ended := false
 var damage_log: Dictionary = {}
-var hud: CanvasLayer
-var red_score: Label
-var blue_score: Label
-var timer_label: Label
-var scoreboard: Control
-var result_layer: Control
+## The TDM HUD (scripts/ui/tdm_hud.gd). It only draws: every number it shows is
+## read from this controller or from the local player. Untyped for the usual
+## parse-time reason: update_clock() etc. are this project's functions, not
+## CanvasLayer's, so a CanvasLayer-typed variable would refuse to call them.
+var hud = null
 var _refresh_timer := 0.0
+## The pending local respawn, kept so the HUD can show "Respawning in 2.4".
+## The 3 second delay itself is unchanged.
+var _local_respawn_timer: SceneTreeTimer
 
 
 func start_match(owner_game, local_actor, lobby_records: Array[Dictionary], team: String) -> void:
@@ -157,9 +161,17 @@ func _on_local_died() -> void:
 
 func _respawn_local() -> void:
 	var timer := get_tree().create_timer(RESPAWN_SECONDS)
+	_local_respawn_timer = timer
 	timer.timeout.connect(func():
 		if not ended and is_instance_valid(local_player):
 			local_player.tdm_respawn(_spawn_for_team(session_team, 0)))
+
+
+## Seconds until the local player respawns, or 0 when no respawn is pending.
+func local_respawn_time_left() -> float:
+	if _local_respawn_timer == null:
+		return 0.0
+	return _local_respawn_timer.time_left
 
 
 func _respawn_bot(old_bot) -> void:
@@ -181,127 +193,44 @@ func _process(delta: float) -> void:
 	if ended:
 		return
 	remaining = maxf(remaining - delta, 0.0)
+	hud.update_clock(remaining)
+	# TAB is still HELD, not toggled. It is now checked every frame, so the
+	# board appears the instant the key goes down instead of up to 250 ms later;
+	# its contents still refresh four times a second while it is open.
+	var holding_tab := Input.is_key_pressed(KEY_TAB)
+	hud.set_scoreboard_visible(holding_tab)
 	_refresh_timer += delta
 	if _refresh_timer >= 0.25:
 		_refresh_timer = 0.0
-		timer_label.text = _format_time(remaining)
-		if Input.is_key_pressed(KEY_TAB):
-			scoreboard.visible = true
+		if holding_tab:
 			_refresh_scoreboard()
-		else:
-			scoreboard.visible = false
 	if remaining <= 0.0:
 		_end_match()
 
 
-func _format_time(seconds: float) -> String:
-	var whole := int(ceil(seconds))
-	return "%02d:%02d" % [whole / 60, whole % 60]
-
-
 func _build_hud() -> void:
-	hud = CanvasLayer.new()
-	hud.layer = 20
+	# HudScript.new() (rather than CanvasLayer.new() + set_script) so the HUD's
+	# own _init() runs and builds its nodes.
+	hud = HudScript.new()
+	hud.name = "TDMHud"
 	game.add_child(hud)
-	var root := Control.new()
-	root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	hud.add_child(root)
-	var bar := ColorRect.new()
-	bar.color = Color(0.055, 0.07, 0.11, 0.82)
-	bar.position = Vector2(0, 0)
-	bar.size = Vector2(1280, 58)
-	bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	root.add_child(bar)
-	red_score = _label(root, "TEAM RED  0", Vector2(36, 10), Vector2(400, 38), 23, RED)
-	blue_score = _label(root, "TEAM BLUE  0", Vector2(844, 10), Vector2(400, 38), 23, BLUE)
-	blue_score.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	timer_label = _label(root, "10:00", Vector2(560, 10), Vector2(160, 38), 24, Color.WHITE)
-	timer_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	scoreboard = _build_scoreboard(root)
-	scoreboard.visible = false
+	hud.setup(self, local_player, session_team)
 	_refresh_scoreboard()
 
 
-func _label(parent: Control, text_value: String, at: Vector2, size: Vector2, font_size: int, color: Color) -> Label:
-	var label := Label.new()
-	label.text = text_value
-	label.position = at
-	label.size = size
-	label.add_theme_font_size_override("font_size", font_size)
-	label.add_theme_color_override("font_color", color)
-	label.add_theme_color_override("font_outline_color", Color(0.04, 0.05, 0.08, 0.95))
-	label.add_theme_constant_override("outline_size", 3)
-	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	parent.add_child(label)
-	return label
-
-
-func _build_scoreboard(parent: Control) -> Control:
-	var overlay := Control.new()
-	overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	parent.add_child(overlay)
-	var dim := ColorRect.new()
-	dim.color = Color(0.025, 0.035, 0.07, 0.84)
-	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	dim.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	overlay.add_child(dim)
-	for side in 2:
-		var panel := PanelContainer.new()
-		panel.name = "TeamRedPanel" if side == 0 else "TeamBluePanel"
-		panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		panel.position = Vector2(32 + side * 624, 86)
-		panel.size = Vector2(592, 538)
-		var style := StyleBoxFlat.new()
-		style.bg_color = Color(0.06, 0.08, 0.12, 0.96)
-		style.border_width_left = 3
-		style.border_width_right = 1
-		style.border_width_top = 2
-		style.border_width_bottom = 2
-		style.border_color = RED if side == 0 else BLUE
-		panel.add_theme_stylebox_override("panel", style)
-		overlay.add_child(panel)
-		var list := VBoxContainer.new()
-		list.name = "RedList" if side == 0 else "BlueList"
-		list.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		list.add_theme_constant_override("separation", 7)
-		panel.add_child(list)
-		_label(list, "TEAM %s  |  %02d KILLS" % ["RED" if side == 0 else "BLUE", scores["RED" if side == 0 else "BLUE"]], Vector2.ZERO, Vector2(550, 38), 22, RED if side == 0 else BLUE)
-		_label(list, "PLAYER                                      K      D      A", Vector2.ZERO, Vector2(550, 25), 13, Color("#D8E2EF"))
-		for _row in 10:
-			_label(list, "", Vector2.ZERO, Vector2(550, 32), 15, Color.WHITE)
-	return overlay
-
-
+## Pushes the live scores into the HUD's score pill and, if it is open, the
+## scoreboard. combatant_died() calls this on every death.
 func _refresh_scoreboard() -> void:
-	if red_score == null:
+	if hud == null:
 		return
-	red_score.text = "TEAM RED  %d" % int(scores.RED)
-	blue_score.text = "TEAM BLUE  %d" % int(scores.BLUE)
-	for team in ["RED", "BLUE"]:
-		var list: VBoxContainer = scoreboard.get_node("TeamRedPanel/RedList" if team == "RED" else "TeamBluePanel/BlueList")
-		var heading: Label = list.get_child(0)
-		heading.text = "TEAM %s  |  %02d KILLS" % [team, int(scores[team])]
-		var row_index := 0
-		for record in players:
-			if str(record.get("team", "")) != team:
-				continue
-			var row: Label = list.get_child(row_index + 2)
-			var local_mark := "  • YOU" if str(record.get("id", "")) == "local" else ""
-			row.text = "%-24s %3d %3d %3d%s" % [str(record.get("name", "Player")).left(22), int(record.get("kills", 0)), int(record.get("deaths", 0)), int(record.get("assists", 0)), local_mark]
-			row.add_theme_color_override("font_color", Color("#FFE497") if not local_mark.is_empty() else Color("#F6F4FF"))
-			row_index += 1
-		while row_index < 10:
-			list.get_child(row_index + 2).text = "—"
-			row_index += 1
+	hud.refresh_scores()
+	hud.refresh_scoreboard()
 
 
 func _end_match() -> void:
 	if ended:
 		return
 	ended = true
-	timer_label.text = "00:00"
 	local_player.set_physics_process(false)
 	for actor in get_tree().get_nodes_in_group("tdm_combatants"):
 		actor.set_physics_process(false)
@@ -309,30 +238,15 @@ func _end_match() -> void:
 		glob.queue_free()
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	var winner := "DRAW"
+	var winner_color := Color.WHITE
 	if int(scores.RED) > int(scores.BLUE):
 		winner = "TEAM RED WINS"
+		winner_color = RED
 	elif int(scores.BLUE) > int(scores.RED):
 		winner = "TEAM BLUE WINS"
-	result_layer = Control.new()
-	result_layer.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	result_layer.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	hud.add_child(result_layer)
-	var dim := ColorRect.new()
-	dim.color = Color(0.025, 0.035, 0.07, 0.94)
-	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	dim.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	result_layer.add_child(dim)
-	var title := _label(result_layer, winner, Vector2(100, 120), Vector2(1080, 78), 48, Color.WHITE)
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	var details := _label(result_layer, "TEAM RED  %d KILLS                       TEAM BLUE  %d KILLS\n\nYOUR STATS     %d KILLS    %d DEATHS    %d ASSISTS" % [int(scores.RED), int(scores.BLUE), _local_stat("kills"), _local_stat("deaths"), _local_stat("assists")], Vector2(160, 260), Vector2(960, 150), 24, Color("#DAE8F1"))
-	details.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	var button := Button.new()
-	button.text = "RETURN TO MAIN MENU"
-	button.position = Vector2(470, 500)
-	button.size = Vector2(340, 58)
-	button.add_theme_font_size_override("font_size", 20)
-	result_layer.add_child(button)
-	button.pressed.connect(func(): get_tree().change_scene_to_file("res://scenes/main.tscn"))
+		winner_color = BLUE
+	hud.show_result(winner, winner_color, _local_stat("kills"), _local_stat("deaths"),
+		_local_stat("assists"), func(): get_tree().change_scene_to_file("res://scenes/main.tscn"))
 
 
 func _local_stat(key: String) -> int:
