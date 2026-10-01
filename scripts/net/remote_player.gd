@@ -76,11 +76,14 @@ func _build_weapon(customization: Dictionary) -> void:
 	# camera pitch without tipping the whole character capsule over.
 	_aim_pivot = Node3D.new()
 	_aim_pivot.name = "AimPivot"
-	_aim_pivot.position = Vector3(0.28, 1.42, -0.08)
+	_aim_pivot.position = Vector3(0.46, 1.42, -0.08)
 	add_child(_aim_pivot)
 
 	var weapon := Node3D.new()
 	weapon.name = "Weapon"
+	# Move the rifle in front of the torso. Its first position overlapped the
+	# capsule body, which allowed the body mesh to hide almost all of the gun.
+	weapon.position.z = -0.26
 	_aim_pivot.add_child(weapon)
 	weapon.add_child(_make_weapon_box(
 		Vector3(0.09, 0.1, 0.55), Vector3.ZERO, Color("#303342")))
