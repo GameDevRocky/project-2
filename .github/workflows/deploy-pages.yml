@@ -1,34 +1,25 @@
-name: Deploy web build to GitHub Pages
+name: Deploy main and online web builds to GitHub Pages
 
-# What this does, in plain terms:
-# Every time you push to "main", GitHub spins up a fresh Linux machine,
-# downloads Godot itself (the engine has no idea this project exists until
-# then), exports the project using the "Web" preset from export_presets.cfg,
-# and publishes the result to your GitHub Pages link. Nothing is exported
-# on your own computer and no build files are committed to the repo.
+# GitHub Pages provides one site per repository. This workflow publishes two
+# Godot exports inside that one site:
+#   /project-2/         -> main branch
+#   /project-2/online/  -> online branch
 
 on:
   push:
-    branches: [main]
-  workflow_dispatch: # lets you click "Run workflow" by hand from any branch
+    branches: [main, online]
+  workflow_dispatch:
 
 permissions:
   contents: read
   pages: write
   id-token: write
 
-# If you push twice quickly, cancel the older run instead of racing it.
 concurrency:
   group: pages
   cancel-in-progress: true
 
 env:
-  # The GitHub release tag (used in download URLs) spells this with a
-  # hyphen. Godot itself expects a dot before "stable" for the folder it
-  # looks for templates in on disk — confirmed by the mismatch this bug
-  # caused on 2026-09-25: templates downloaded fine but landed in
-  # export_templates/4.7.2-stable/ while Godot looked in
-  # export_templates/4.7.2.stable/ and reported "no export template found."
   GODOT_VERSION: 4.7.2-stable
   GODOT_TEMPLATE_VERSION: 4.7.2.stable
 
@@ -36,36 +27,49 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout project
+      - name: Checkout main branch
         uses: actions/checkout@v4
+        with:
+          ref: main
+          path: main-source
 
-      - name: Download the Godot engine
+      - name: Checkout online branch
+        uses: actions/checkout@v4
+        with:
+          ref: online
+          path: online-source
+
+      - name: Download Godot
         run: |
           wget "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}/Godot_v${GODOT_VERSION}_linux.x86_64.zip"
           unzip "Godot_v${GODOT_VERSION}_linux.x86_64.zip"
           mv "Godot_v${GODOT_VERSION}_linux.x86_64" godot
           chmod +x godot
 
-      - name: Download the Web export templates
+      - name: Download Web export templates
         run: |
           wget "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}/Godot_v${GODOT_VERSION}_export_templates.tpz"
           mkdir -p "$HOME/.local/share/godot/export_templates/${GODOT_TEMPLATE_VERSION}"
           unzip "Godot_v${GODOT_VERSION}_export_templates.tpz" -d /tmp/templates
           mv /tmp/templates/templates/* "$HOME/.local/share/godot/export_templates/${GODOT_TEMPLATE_VERSION}/"
-          ls "$HOME/.local/share/godot/export_templates/${GODOT_TEMPLATE_VERSION}/" | grep web
 
-      - name: Export the Web build
+      - name: Export main branch at site root
         run: |
-          mkdir -p build/web
-          ./godot --headless --export-release "Web" build/web/index.html
+          mkdir -p "$GITHUB_WORKSPACE/site"
+          ./godot --headless --path "$GITHUB_WORKSPACE/main-source" --export-release "Web" "$GITHUB_WORKSPACE/site/index.html"
 
-      - name: Let Pages serve the .wasm/.pck files as-is
-        run: touch build/web/.nojekyll
+      - name: Export online branch under online path
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/site/online"
+          ./godot --headless --path "$GITHUB_WORKSPACE/online-source" --export-release "Web" "$GITHUB_WORKSPACE/site/online/index.html"
 
-      - name: Upload the build as a Pages artifact
-        uses: actions/upload-pages-artifact@v3
+      - name: Prepare Pages artifact
+        run: touch "$GITHUB_WORKSPACE/site/.nojekyll"
+
+      - name: Upload both builds
+        uses: actions/upload-pages-artifact@v4
         with:
-          path: build/web
+          path: site
 
   deploy:
     needs: build
@@ -74,6 +78,6 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - name: Deploy to GitHub Pages
+      - name: Deploy both builds to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
