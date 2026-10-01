@@ -33,3 +33,8 @@ One line per note. Read this file at the start of every session.
 - [compatibility-renderer-brightens-shadowed-sun.md](compatibility-renderer-brightens-shadowed-sun.md)
   — the web renderer draws a shadow-casting sun ~2.7x brighter than desktop;
   arena.gd lowers it to 0.25 there; check both renderers after lighting changes.
+- [browser-multiplayer-target.md](browser-multiplayer-target.md) — the shipped
+  multiplayer client runs from GitHub Pages and requires browser networking plus
+  an external service.
+- [human-only-pvp-modes.md](human-only-pvp-modes.md) — online matches contain
+  human players only; TDM is RED versus BLUE and Survival replaces the PvE wave path.

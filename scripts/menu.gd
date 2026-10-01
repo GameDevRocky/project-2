@@ -7,8 +7,6 @@ const Data := preload("res://scripts/character_customization_data.gd")
 const PreviewScript := preload("res://scripts/character_preview.gd")
 const PortraitScript := preload("res://scripts/bean_portrait.gd")
 const MAX_PER_TEAM := 10
-const JOIN_DELAY := 1.8
-const COUNTDOWN_SECONDS := 5
 const CATEGORIES := ["SKINS", "BODY COLORS", "HATS", "MASKS", "GUN SKINS", "BACK BLING"]
 const ITEM_NAMES := {
 	"HATS": Data.HATS,
@@ -16,12 +14,6 @@ const ITEM_NAMES := {
 	"GUN SKINS": Data.GUN_SKINS,
 	"BACK BLING": Data.BACK_BLING,
 }
-const SIM_NAMES := [
-	"GlowBean", "PaintGhost", "OrbRunner", "NeonSplash", "PixelBean",
-	"PaintBandit", "GlowStrike", "InkRunner", "CyanRush", "PinkPulse",
-	"MintMaverick", "PrismDash", "BubbleByte", "StarSprayer", "JellyJolt",
-	"Chromatic", "DoodleDrift", "NovaNozzle", "SplashOrbit",
-]
 const TEAM_RED := Color("#FF627E")
 const TEAM_BLUE := Color("#58D7F2")
 
@@ -53,10 +45,19 @@ var rotation_target := 0.0
 var red_rows: VBoxContainer
 var blue_rows: VBoxContainer
 var fill_label: Label
+var join_code_edit: LineEdit
 var inspection_hide_nodes: Array[Node3D] = []
 
 
 func _ready() -> void:
+	if NetworkSession.is_dedicated_server():
+		return
+	NetworkSession.connection_state_changed.connect(_on_network_state_changed)
+	NetworkSession.connection_failed.connect(_on_network_failed)
+	NetworkSession.lobby_joined.connect(_on_lobby_joined)
+	NetworkSession.lobby_changed.connect(_on_online_lobby_changed)
+	NetworkSession.match_started.connect(_on_online_match_started)
+	NetworkSession.server_left.connect(_on_server_left)
 	randomize()
 	_build_showcase()
 	_build_ui()
@@ -383,9 +384,9 @@ func _show_mode_select() -> void:
 	_label(content, "SELECT A GAME MODE", Vector2(24, 26), Vector2(620, 54), 32)
 	_label(content, "CHOOSE YOUR GLOWFALL MATCH", Vector2(26, 81), Vector2(620, 24), 14, Color("#9FE9E1"))
 	_button(content, "TEAM DEATH MATCH", Vector2(38, 142), Vector2(600, 110), _select_tdm, false, Color("#FF718A"))
-	_label(content, "Two teams. Ten minutes. Most eliminations wins.", Vector2(58, 220), Vector2(560, 24), 15, Color("#DDE7F3"))
+	_label(content, "Human players. Red versus Blue. Most eliminations wins.", Vector2(58, 220), Vector2(560, 24), 15, Color("#DDE7F3"))
 	_button(content, "SURVIVAL", Vector2(38, 286), Vector2(600, 110), func(): _launch_survival(), false, Color("#65E2D2"))
-	_label(content, "Fight through waves and survive as long as you can.", Vector2(58, 364), Vector2(560, 24), 15, Color("#DDE7F3"))
+	_label(content, "Human free-for-all. One life. Last player standing wins.", Vector2(58, 364), Vector2(560, 24), 15, Color("#DDE7F3"))
 	_button(content, "BACK", Vector2(38, 446), Vector2(180, 48), func(): _fade_transition(_show_main, false))
 	menu_content.modulate.a = 0.0
 	_create_tween().tween_property(menu_content, "modulate:a", 1.0, 0.22)
@@ -393,33 +394,90 @@ func _show_mode_select() -> void:
 
 func _launch_survival() -> void:
 	selected_game_mode = "SURVIVAL"
-	local_team = "BLUE"
-	lobby_players = [{"id": "local", "name": _username(), "team": local_team, "source": "local", "customization": customization.duplicate(true)}]
-	_lobby_to_match()
+	_show_online_setup()
 
 
 func _select_tdm() -> void:
 	selected_game_mode = "TEAM_DEATH_MATCH"
-	_begin_tdm_queue()
+	_show_online_setup()
+
+
+func _show_online_setup() -> void:
+	current_screen = "online_setup"
+	_clear_screen()
+	var card := _panel(menu_content, Vector2(330, 112), Vector2(620, 480), Color("#65E2D2"), 1)
+	var content := Control.new()
+	card.add_child(content)
+	var mode_title := "SURVIVAL" if selected_game_mode == "SURVIVAL" else "TEAM DEATHMATCH"
+	_label(content, mode_title + "  /  ONLINE", Vector2(24, 22), Vector2(560, 48), 30)
+	status_label = _label(content, "Create a lobby or enter a friend's code.", Vector2(26, 74), Vector2(560, 28), 15, Color("#B4EEE7"))
+	_button(content, "CREATE LOBBY", Vector2(38, 128), Vector2(544, 62), _create_online_lobby, false, Color("#FF718A"))
+	_label(content, "JOIN WITH LOBBY CODE", Vector2(40, 218), Vector2(300, 24), 13, Color("#DDE7F3"))
+	join_code_edit = LineEdit.new()
+	join_code_edit.placeholder_text = "ABCDE"
+	join_code_edit.max_length = 6
+	join_code_edit.position = Vector2(38, 250)
+	join_code_edit.size = Vector2(330, 54)
+	join_code_edit.add_theme_font_size_override("font_size", 22)
+	content.add_child(join_code_edit)
+	_button(content, "JOIN", Vector2(382, 250), Vector2(200, 54), _join_online_lobby)
+	_button(content, "BACK", Vector2(38, 365), Vector2(180, 48), func(): _fade_transition(_show_mode_select, false))
+
+
+func _create_online_lobby() -> void:
+	NetworkSession.configure_local_player(_username(), customization)
+	status_label.text = "CONNECTING TO ONLINE SERVER..."
+	NetworkSession.create_lobby(selected_game_mode)
+
+
+func _join_online_lobby() -> void:
+	NetworkSession.configure_local_player(_username(), customization)
+	status_label.text = "CONNECTING TO LOBBY..."
+	NetworkSession.join_lobby(join_code_edit.text)
+
+
+func _on_network_state_changed(_state: int, detail: String) -> void:
+	if current_screen == "online_setup" and is_instance_valid(status_label):
+		status_label.text = detail.to_upper()
+
+
+func _on_network_failed(detail: String) -> void:
+	if current_screen == "online_setup" and is_instance_valid(status_label):
+		status_label.text = detail.to_upper()
+
+
+func _on_lobby_joined(_code: String, mode: String) -> void:
+	selected_game_mode = mode
+	lobby_players = NetworkSession.lobby_roster()
+	var local_record := NetworkSession.players.get(NetworkSession.local_peer_id(), {}) as Dictionary
+	local_team = str(local_record.get("team", "FFA"))
+	_build_lobby_screen("LOBBY CONNECTED")
+
+
+func _on_online_lobby_changed(roster: Array[Dictionary]) -> void:
+	lobby_players = roster.duplicate(true)
+	if current_screen == "lobby":
+		var local_record := NetworkSession.players.get(NetworkSession.local_peer_id(), {}) as Dictionary
+		local_team = str(local_record.get("team", local_team))
+		_render_team_rows()
+
+
+func _on_online_match_started(mode: String, roster: Array[Dictionary]) -> void:
+	selected_game_mode = mode
+	lobby_players = roster.duplicate(true)
+	var local_record := NetworkSession.players.get(NetworkSession.local_peer_id(), {}) as Dictionary
+	local_team = str(local_record.get("team", "FFA"))
+	_lobby_to_match()
+
+
+func _on_server_left() -> void:
+	if current_screen == "lobby":
+		_show_online_setup()
+		status_label.text = "SERVER DISCONNECTED. TRY AGAIN."
 
 
 func _begin_tdm_queue() -> void:
-	queue_generation += 1
-	var this_queue := queue_generation
-	lobby_players.clear()
-	local_team = "RED" if randi_range(0, 1) == 0 else "BLUE"
-	lobby_players.append({"id": "local", "name": _username(), "team": local_team, "source": "local", "customization": customization.duplicate(true)})
-	match_starting = false
-	var transition := _create_tween()
-	transition.tween_property(fade_overlay, "modulate:a", 0.72, 0.14)
-	await transition.finished
-	_build_lobby_screen("WAITING FOR PLAYERS  •  TEAM %s ASSIGNED" % local_team)
-	menu_camera.position = Vector3(0.15, 2.05, 5.95)
-	var reveal := _create_tween()
-	reveal.set_parallel(true)
-	reveal.tween_property(menu_content, "modulate:a", 1.0, 0.25)
-	reveal.tween_property(fade_overlay, "modulate:a", 0.0, 0.25)
-	_fill_lobby(this_queue)
+	_show_online_setup()
 
 
 func _lobby_to_match() -> void:
@@ -450,22 +508,31 @@ func _lobby_to_match() -> void:
 func _build_lobby_screen(status: String) -> void:
 	current_screen = "lobby"
 	_clear_screen()
-	var title := _label(menu_content, "TEAM DEATHMATCH", Vector2(0, 26), Vector2(1280, 48), 31)
+	var mode_title := "SURVIVAL FREE-FOR-ALL" if selected_game_mode == "SURVIVAL" else "TEAM DEATHMATCH"
+	var title := _label(menu_content, mode_title, Vector2(0, 26), Vector2(1280, 48), 31)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	status_label = _label(menu_content, "MATCH STARTING" if match_starting else status, Vector2(0, 78), Vector2(1280, 26), 16, Color("#B4EEE7"))
+	var lobby_status := "%s  •  CODE %s" % [status, NetworkSession.current_lobby_code]
+	status_label = _label(menu_content, "MATCH STARTING" if match_starting else lobby_status, Vector2(0, 78), Vector2(1280, 26), 16, Color("#B4EEE7"))
 	status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	countdown_label = _label(menu_content, "", Vector2(0, 105), Vector2(1280, 38), 27, Color("#FFE28D"))
 	if match_starting:
 		countdown_label.text = str(countdown_remaining)
 	countdown_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	var red_panel := _panel(menu_content, Vector2(54, 154), Vector2(564, 474), TEAM_RED)
-	var blue_panel := _panel(menu_content, Vector2(662, 154), Vector2(564, 474), TEAM_BLUE)
-	red_rows = _team_column(red_panel, "TEAM RED", TEAM_RED)
-	blue_rows = _team_column(blue_panel, "TEAM BLUE", TEAM_BLUE)
-	fill_label = _label(menu_content, "RED  1 / 10          BLUE  0 / 10", Vector2(0, 638), Vector2(1280, 28), 17)
+	if selected_game_mode == "SURVIVAL":
+		var players_panel := _panel(menu_content, Vector2(290, 154), Vector2(700, 474), TEAM_BLUE)
+		red_rows = _team_column(players_panel, "HUMAN PLAYERS", TEAM_BLUE)
+		blue_rows = null
+		fill_label = _label(menu_content, "%d / %d PLAYERS" % [lobby_players.size(), MAX_PER_TEAM * 2], Vector2(0, 638), Vector2(1280, 28), 17)
+	else:
+		var red_panel := _panel(menu_content, Vector2(54, 154), Vector2(564, 474), TEAM_RED)
+		var blue_panel := _panel(menu_content, Vector2(662, 154), Vector2(564, 474), TEAM_BLUE)
+		red_rows = _team_column(red_panel, "TEAM RED", TEAM_RED)
+		blue_rows = _team_column(blue_panel, "TEAM BLUE", TEAM_BLUE)
+		fill_label = _label(menu_content, "RED  0 / 10          BLUE  0 / 10", Vector2(0, 638), Vector2(1280, 28), 17)
 	fill_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_button(menu_content, "CUSTOMIZE CHARACTER", Vector2(42, 674), Vector2(258, 38), func(): _open_customization("lobby"))
 	_button(menu_content, "LEAVE QUEUE", Vector2(980, 674), Vector2(252, 38), _leave_lobby, false, Color("#FFA2B4"))
+	_button(menu_content, "START MATCH", Vector2(514, 674), Vector2(252, 38), NetworkSession.start_match, not NetworkSession.is_host(), Color("#FFE28D"))
 	_render_team_rows()
 
 
@@ -490,25 +557,29 @@ func _team_column(panel: PanelContainer, heading: String, accent: Color) -> VBox
 
 
 func _render_team_rows() -> void:
-	if not is_instance_valid(red_rows) or not is_instance_valid(blue_rows):
+	if not is_instance_valid(red_rows):
 		return
-	for container in [red_rows, blue_rows]:
+	var containers: Array[VBoxContainer] = [red_rows]
+	if is_instance_valid(blue_rows):
+		containers.append(blue_rows)
+	for container in containers:
 		for child in container.get_children():
 			child.queue_free()
 	var red_index := 0
 	var blue_index := 0
 	for player_record in lobby_players:
 		var team := str(player_record.team)
-		var target_rows := red_rows if team == "RED" else blue_rows
-		var ordinal := red_index if team == "RED" else blue_index
-		if team == "RED": red_index += 1
+		var target_rows := red_rows if selected_game_mode == "SURVIVAL" or team == "RED" else blue_rows
+		var ordinal := red_index if selected_game_mode == "SURVIVAL" or team == "RED" else blue_index
+		if selected_game_mode == "SURVIVAL" or team == "RED": red_index += 1
 		else: blue_index += 1
 		var row := PanelContainer.new()
 		row.custom_minimum_size = Vector2(520, 34)
 		var style := StyleBoxFlat.new()
 		style.bg_color = Color("#292333" if team == "RED" else "#1F2F3A", 0.92)
-		style.border_color = Color(_team_color(team), 0.95) if str(player_record.id) == "local" else Color("#56596B")
-		style.set_border_width_all(2 if str(player_record.id) == "local" else 1)
+		var is_local := int(player_record.get("peer_id", -1)) == NetworkSession.local_peer_id()
+		style.border_color = Color(_team_color(team), 0.95) if is_local else Color("#56596B")
+		style.set_border_width_all(2 if is_local else 1)
 		style.corner_radius_top_left = 4
 		style.corner_radius_top_right = 4
 		style.corner_radius_bottom_left = 4
@@ -526,10 +597,10 @@ func _render_team_rows() -> void:
 		icon.team_color = _team_color(team)
 		line.add_child(icon)
 		var name_label := Label.new()
-		name_label.text = str(player_record.name) + ("  •  YOU" if str(player_record.id) == "local" else "")
+		name_label.text = str(player_record.name) + ("  •  YOU" if is_local else "")
 		name_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		name_label.add_theme_font_size_override("font_size", 13)
-		name_label.add_theme_color_override("font_color", Color("#FFFFFF") if str(player_record.id) == "local" else Color("#D5D8E4"))
+		name_label.add_theme_color_override("font_color", Color("#FFFFFF") if is_local else Color("#D5D8E4"))
 		line.add_child(name_label)
 		var position_label := Label.new()
 		position_label.text = "%02d" % (ordinal + 1)
@@ -537,10 +608,14 @@ func _render_team_rows() -> void:
 		position_label.add_theme_color_override("font_color", Color("#AEB3C5"))
 		line.add_child(position_label)
 		target_rows.add_child(row)
-	for i in range(red_index, MAX_PER_TEAM): _empty_slot(red_rows, TEAM_RED)
-	for i in range(blue_index, MAX_PER_TEAM): _empty_slot(blue_rows, TEAM_BLUE)
+	if selected_game_mode != "SURVIVAL":
+		for i in range(red_index, MAX_PER_TEAM): _empty_slot(red_rows, TEAM_RED)
+		for i in range(blue_index, MAX_PER_TEAM): _empty_slot(blue_rows, TEAM_BLUE)
 	if is_instance_valid(fill_label):
-		fill_label.text = "RED  %d / %d          BLUE  %d / %d" % [_team_count("RED"), MAX_PER_TEAM, _team_count("BLUE"), MAX_PER_TEAM]
+		if selected_game_mode == "SURVIVAL":
+			fill_label.text = "%d / %d PLAYERS  •  LAST PLAYER STANDING" % [lobby_players.size(), MAX_PER_TEAM * 2]
+		else:
+			fill_label.text = "RED  %d / %d          BLUE  %d / %d" % [_team_count("RED"), MAX_PER_TEAM, _team_count("BLUE"), MAX_PER_TEAM]
 
 
 func _empty_slot(rows: VBoxContainer, tint: Color) -> void:
@@ -564,29 +639,10 @@ func _empty_slot(rows: VBoxContainer, tint: Color) -> void:
 
 
 func _fill_lobby(this_queue: int) -> void:
-	var index := 0
-	while lobby_players.size() < MAX_PER_TEAM * 2:
-		await get_tree().create_timer(JOIN_DELAY).timeout
-		if not is_inside_tree() or this_queue != queue_generation:
-			return
-		var red_count := _team_count("RED")
-		var blue_count := _team_count("BLUE")
-		var team := "RED" if red_count < blue_count else "BLUE"
-		if red_count == blue_count:
-			team = "RED" if randi_range(0, 1) == 0 else "BLUE"
-		if _team_count(team) >= MAX_PER_TEAM:
-			team = "BLUE" if team == "RED" else "RED"
-		lobby_players.append({
-			"id": "sim_%02d" % index,
-			"name": SIM_NAMES[index % SIM_NAMES.size()],
-			"team": team,
-			"source": "local_simulation",
-			"customization": Data.create_session_data(),
-		})
-		index += 1
-		_render_team_rows()
-	if _team_count("RED") == MAX_PER_TEAM and _team_count("BLUE") == MAX_PER_TEAM:
-		_start_countdown(this_queue)
+	# Kept as a compatibility entry point for older menu callbacks. Online
+	# lobbies are populated only by NetworkSession roster updates.
+	if this_queue < 0:
+		return
 
 
 func _team_count(team: String) -> int:
@@ -598,29 +654,15 @@ func _team_count(team: String) -> int:
 
 
 func _start_countdown(this_queue: int) -> void:
-	if match_starting:
+	if this_queue < 0:
 		return
-	match_starting = true
-	if is_instance_valid(status_label):
-		status_label.text = "MATCH STARTING"
-	for number in range(COUNTDOWN_SECONDS, 0, -1):
-		if this_queue != queue_generation:
-			return
-		countdown_remaining = number
-		if is_instance_valid(countdown_label):
-			countdown_label.text = str(number)
-		await get_tree().create_timer(1.0).timeout
-	if this_queue != queue_generation:
-		return
-	if is_instance_valid(countdown_label):
-		countdown_label.text = "GO!"
-	await get_tree().create_timer(0.55).timeout
-	_lobby_to_match()
+	NetworkSession.start_match()
 
 
 func _leave_lobby() -> void:
 	queue_generation += 1
 	match_starting = false
+	NetworkSession.leave_lobby()
 	lobby_players.clear()
 	_fade_transition(_show_main, false)
 
@@ -740,9 +782,11 @@ func _commit_username(value: String) -> void:
 
 func _sync_local_player_record() -> void:
 	for player_record in lobby_players:
-		if str(player_record.get("id", "")) == "local":
+		if int(player_record.get("peer_id", -1)) == NetworkSession.local_peer_id():
 			player_record["name"] = customization.username
 			player_record["customization"] = customization.duplicate(true)
+	if NetworkSession.is_online():
+		NetworkSession.configure_local_player(_username(), customization)
 	if current_screen == "lobby":
 		_render_team_rows()
 
@@ -751,7 +795,7 @@ func _return_from_customization() -> void:
 	_commit_username(username_edit.text if is_instance_valid(username_edit) else _username())
 	preview.set_customization(customization)
 	if customize_return == "lobby":
-		_build_lobby_screen("QUEUE ACTIVE  •  MATCHMAKING CONTINUES")
+		_build_lobby_screen("LOBBY CONNECTED")
 		menu_content.modulate.a = 0.0
 		_create_tween().tween_property(menu_content, "modulate:a", 1.0, 0.25)
 		_fade_camera_to_lobby()

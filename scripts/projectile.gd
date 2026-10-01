@@ -54,6 +54,7 @@ var color: Color = Color.WHITE
 var life: float = 4.0
 var attacker = null
 var attacker_team := ""
+var can_deal_damage := true
 
 
 # --- Physics layer numbers, named so the code reads clearly -----------------
@@ -207,14 +208,14 @@ func _impact(at: Vector3, what) -> void:
 	var friendly_hit := false
 	if not attacker_team.is_empty() and what != null and what.is_in_group("tdm_combatants"):
 		friendly_hit = str(what.get("tdm_team")) == attacker_team
-	if what != null and not friendly_hit and what.is_in_group(target_group) and what.has_method("take_damage"):
+	if can_deal_damage and what != null and not friendly_hit and what.is_in_group(target_group) and what.has_method("take_damage"):
 		what.take_damage(damage, attacker)
 
 	# Splash damage, if the shooter's inherited pair grants it. This is a plain
 	# distance check against everything in the target group rather than a
 	# physics sphere query - with at most a couple of dozen enemies alive it is
 	# just as fast, and it is far easier to read and to debug.
-	if splash_radius > 0.0:
+	if can_deal_damage and splash_radius > 0.0:
 		_splash(at, what)
 
 	_spawn_splat(at)
