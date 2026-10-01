@@ -367,7 +367,7 @@ func _submit_shot(origin: Vector3, direction: Vector3, shot_data: Dictionary) ->
 		return
 	var safe_data := {
 		"damage": clampf(float(shot_data.get("damage", 0.0)), 0.0, 100.0),
-		"speed": clampf(float(shot_data.get("speed", 60.0)), 1.0, 120.0),
+		"speed": clampf(float(shot_data.get("speed", 90.0)), 1.0, 120.0),
 		"splash_radius": clampf(float(shot_data.get("splash_radius", 0.0)), 0.0, 10.0),
 		"splash_mult": clampf(float(shot_data.get("splash_mult", 0.0)), 0.0, 1.0),
 		"color": shot_data.get("color", Color.WHITE),

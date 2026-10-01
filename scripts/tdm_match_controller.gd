@@ -96,7 +96,7 @@ func _on_remote_shot(peer_id: int, origin: Vector3, direction: Vector3, shot_dat
 	var glob := Node3D.new()
 	glob.set_script(Projectile)
 	glob.damage = float(shot_data.get("damage", 22.0))
-	glob.speed = float(shot_data.get("speed", 60.0))
+	glob.speed = float(shot_data.get("speed", 90.0))
 	glob.splash_radius = float(shot_data.get("splash_radius", 0.0))
 	glob.splash_mult = float(shot_data.get("splash_mult", 0.0))
 	glob.color = shot_data.get("color", Color.WHITE)

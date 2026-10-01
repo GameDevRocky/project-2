@@ -38,3 +38,7 @@ One line per note. Read this file at the start of every session.
   an external service.
 - [human-only-pvp-modes.md](human-only-pvp-modes.md) — online matches contain
   human players only; TDM is RED versus BLUE and Survival replaces the PvE wave path.
+- [remote-player-weapon-sync.md](remote-player-weapon-sync.md) — remote players
+  need a visible rifle whose yaw and pitch follow their synchronized aim.
+- [projectile-visual-direction.md](projectile-visual-direction.md) — player shots
+  are small 90 m/s tracers and leave no decorative impact splat.

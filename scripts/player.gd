@@ -85,7 +85,7 @@ signal pair_inherited(pair: Dictionary)
 @export var ammo_regen_delay: float = 0.6
 
 ## How fast your globs travel, in metres per second.
-@export var projectile_speed: float = 60.0
+@export var projectile_speed: float = 90.0
 
 ## How far the mouse turns you. Radians of turn per pixel of mouse movement.
 @export var mouse_sensitivity: float = 0.0022
