@@ -29,6 +29,7 @@ const CustomizationData = preload("res://scripts/character_customization_data.gd
 const PaintKit = preload("res://scripts/visual/paint_kit.gd")
 const PaintFx = preload("res://scripts/visual/paint_fx.gd")
 const ShaderWarmup = preload("res://scripts/visual/shader_warmup.gd")
+const GunSkins = preload("res://scripts/visual/gun_skins.gd")
 
 
 # --- Signals ----------------------------------------------------------------
@@ -338,6 +339,13 @@ func _build_box_gun() -> void:
 func _apply_menu_customization() -> void:
 	if customization.is_empty():
 		return
+	var gun_skin_index := int(customization.get("gun_skin", customization.get("GUN SKINS", 0)))
+	# The Paint Blaster model: the gun skin restyles the whole gun (body, trim,
+	# band, grip). The bristles and tank keep showing your pair colour.
+	if _gun_fill != null:
+		GunSkins.apply(_view_model, gun_skin_index, false)
+		return
+	# Fallback box gun: only its band takes the skin colour.
 	var palette := [Color("#FF6FAE"), Color("#63D9C7"), Color("#54C9E8"), Color("#F5C45E"), Color("#A78BFA"), Color("#F5F4F0"), Color("#FF867C"), Color("#79C991"), Color("#70BCEB"), Color("#C18B67")]
 	# Found by name when the gun was built (it used to be "child number 2",
 	# which silently broke as soon as the gun's parts changed).

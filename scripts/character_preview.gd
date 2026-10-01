@@ -1,10 +1,18 @@
 extends Node3D
 class_name CharacterPreview
 
+## The character shown in the menu: the same dressed Canvas Runner that TDM
+## bots wear (scripts/visual/runner_dresser.gd), so what you pick here is what
+## a runner looks like in a match. If the runner model is missing, the original
+## bean preview below is built instead.
+
 const Data = preload("res://scripts/character_customization_data.gd")
 const PaintKit = preload("res://scripts/visual/paint_kit.gd")
+const RunnerDresser = preload("res://scripts/visual/runner_dresser.gd")
 const DEFAULT_COLORS := ["#242735", "#65F581", "#3A9EFF", "#FF4EAC", "#F7F7F4", "#D93555", "#E5B842", "#637B48", "#9A67E8", "#FFFFFF"]
 
+## Colour of the team marks while there is no team yet (the menu's mint).
+var team_color := Color("#8CEADF")
 var customization: Dictionary = Data.create_session_data()
 var _material_nodes: Array[MeshInstance3D] = []
 
@@ -22,6 +30,19 @@ func _rebuild() -> void:
 	for child in get_children():
 		child.queue_free()
 	_material_nodes.clear()
+	var runner := RunnerDresser.build(customization, team_color, false)
+	if runner != null:
+		add_child(runner)
+		# Feet on the showcase seat (the old bean stood 0.14 m up its capsule),
+		# and turned to face the camera like the bean did (the runner faces +Z).
+		runner.position = Vector3(0.0, 0.13, 0.0)
+		runner.rotation.y = PI
+		return
+	_rebuild_bean()
+
+
+## The original procedural bean, kept as the fallback.
+func _rebuild_bean() -> void:
 	var skin_id := str(customization.get("skin", "default"))
 	var skin := Data.skin_by_id(skin_id)
 	if not str(skin.scene_path).is_empty() and ResourceLoader.exists(skin.scene_path):

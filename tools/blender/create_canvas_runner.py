@@ -18,8 +18,12 @@ collision capsule (radius 0.40, height 1.60) whose base is at the body origin.
 
 Nodes Godot relies on (names must not change):
     CanvasRunner   root empty at the origin.
-    Body           everything that does not move on its own: torso, helmet,
-                   visor, shoulder pads, arms posed on the blaster, team marks.
+    Body           everything that does not move on its own: torso, shoulder
+                   pads, arms posed on the blaster, team marks.
+    Head           helmet + visor + glowing team strip (a separate part so an
+                   outfit can hide it and wear its own head).
+    Socket_Head    top of the helmet (hats).  Socket_Face  front of the visor
+                   (masks).  Socket_Chest  front of the chest.
     Leg_L, Leg_R   one object per leg (thigh, knee pad, shin, boot). ORIGIN AT
                    THE HIP JOINT (x = +0.11 / -0.11, z = 0.78) so Godot swings
                    each leg by rotating it about X.
@@ -400,10 +404,16 @@ forearm_mid = (right_elbow + right_hand) * 0.5
 arm_splotch = splotch("Dry9", forearms["R"], forearm_mid + Vector((RIGHT * 0.4, 0.0, 0.15)),
                       (-RIGHT, 0.0, -0.35), 0.032, dried[1], seed=10)
 
-body_parts = ([pelvis] + upper + arms + [helmet, visor, strip]
+body_parts = ([pelvis] + upper + arms
               + [s for s in splotches + [arm_splotch] if s is not None])
 body = world_join("Body", body_parts)
 pk.parent(body, root)
+
+# The helmet, visor and team strip stay their OWN part, "Head", so a full
+# outfit (astronaut dome, robot head, ghost sheet...) can hide it and wear its
+# own head instead. See scripts/visual/runner_dresser.gd.
+head = world_join("Head", [helmet, visor, strip])
+pk.parent(head, root)
 
 for leg, tag in ((leg_l, "L"), (leg_r, "R")):
     extras = [s for s in leg_splotches[tag] if s is not None]
@@ -421,6 +431,21 @@ if back is None:
 back_point = back[0] if back else Vector((0.0, 0.1, 1.12))
 pk.empty("Socket_Back", loc=tuple(back_point), parent_obj=root)
 pk.empty("Socket_Hand_R", loc=tuple(HAND_SOCKET), rot=(0, 0, 180), parent_obj=root)
+
+# Cosmetic attachment points (the character select's hats and masks). Their
+# positions are fixed numbers that the cosmetic scripts build against:
+#   Socket_Head  very top of the helmet        Blender (0, -0.065, 1.600)
+#   Socket_Face  front of the visor, centre    Blender (0, -0.236, 1.425)
+#   Socket_Chest front of the chest            ray-cast at z = 1.08
+pk.empty("Socket_Head", loc=(0.0, HEAD.y, HEAD.z + HEAD_R[2]), parent_obj=root)
+pk.empty("Socket_Face", loc=(0.0, HEAD.y - HEAD_R[1] - 0.003, HEAD.z - 0.005), parent_obj=root)
+chest = hit(body, (0.0, -1.0, 1.08), (0, 1, 0))
+chest_point = chest[0] if chest else Vector((0.0, -0.16, 1.08))
+pk.empty("Socket_Chest", loc=tuple(chest_point), parent_obj=root)
+print("[runner] sockets: head %s face %s chest %s back %s" % (
+    tuple(round(v, 3) for v in (0.0, HEAD.y, HEAD.z + HEAD_R[2])),
+    tuple(round(v, 3) for v in (0.0, HEAD.y - HEAD_R[1] - 0.003, HEAD.z - 0.005)),
+    tuple(round(v, 3) for v in chest_point), tuple(round(v, 3) for v in back_point)))
 
 pk.smooth_all(35.0)
 pk.export("canvas_runner.glb", budget=3000)

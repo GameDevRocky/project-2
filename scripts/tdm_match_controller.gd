@@ -64,6 +64,8 @@ func _spawn_bot(record: Dictionary) -> void:
 	bot.set_script(EnemyScript)
 	bot.name = str(record.get("id", "Bot"))
 	bot.setup_tdm(str(record.get("team", "RED")), self)
+	# The bot's look comes from its lobby record, like a real player's would.
+	bot.customization = record.get("customization", {})
 	game.add_child(bot)
 	var team_index := 0
 	for entry in players:

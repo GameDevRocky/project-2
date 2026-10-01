@@ -265,6 +265,63 @@ Deviations recorded from the builds:
   closed solids or wall/floor-facing sheets.
 - Weapon skin band uses its own role `PK_Skin`, not `PK_Team`.
 
+## Character select, cosmetics and variety (2026-10-01)
+- Merged `main` (Rocklyn's dual main/online Pages workflow, 5e10ed5) into
+  this branch; no conflicts. The `online` branch was NOT merged (not asked;
+  it rewrites the same files - see memory note).
+- **Character select now dresses the Canvas Runner**, the same model TDM bots
+  wear (`scripts/visual/runner_dresser.gd`, used by the menu preview AND the
+  bots). jcodes's bean stays as a fallback. Categories: OUTFITS (10), SUIT
+  COLORS (10, incl. rainbow and camo patterns via `suit_pattern.gdshader`),
+  HATS (9), MASKS (9), GUN SKINS (10), BACK BLING (12). Outfits hide hats/masks
+  ("this outfit has its own headgear"); every outfit can wear back bling.
+  Opening BACK BLING turns the character round.
+- **Gun skins restyle the whole Paint Blaster** (body, trim, band, grip;
+  `scripts/visual/gun_skins.gd`, WOODGRAIN uses `woodgrain.gdshader`), on your
+  first-person gun and on bots. The bristles/tank keep showing the pair colour.
+- **New Blender models** (tools/blender -> models/generated):
+  `create_cosmetic_outfits_a.py` (skeleton, superhero, zombie, astronaut,
+  ninja, robot, paintball splatter; 8,382 tris), `create_cosmetic_outfits_b.py`
+  (ghost, samurai, cyberpunk + bot-only ART CRITIC, STUDIO JANITOR, MIME, INK
+  GOLEM; 7,710), `create_cosmetic_hats.py` (9; 3,129), `create_cosmetic_masks.py`
+  (9; 2,287), `create_cosmetic_backbling.py` (11 distinct silhouettes; 8,450),
+  `create_enemy_accessories.py` (6 toppers + 4 stickers; 1,936). The runner
+  was rebuilt with a separate `Head` and `Socket_Head/Face/Chest`.
+- **TDM bots** each get a random look from their lobby record
+  (`random_bot_customization`): ~14% a bot-only outfit, ~22% a player outfit,
+  the rest a runner with suit colour, often a hat/mask; random gun skin and
+  back bling; never a suit colour that reads as the other team. Team marks
+  (armbands, chevron, visor, pack paint) always show the team colour.
+- **Survival enemies** get a random small topper (beret, party hat, propeller
+  cap, bow, tiny crown, sprout) or, on the Monolith/Ghost, a sticker. Their
+  colour and outline never change.
+- Shader warm-up now draws every mesh+material in the match and each enemy
+  type once during loading (the cosmetics added new materials).
+- Fixed: `PaintKit.variant` left a whole hidden copy of each cosmetic file
+  alive (leak warnings at exit); deferred menu focus calls could hit a removed
+  button.
+
+## Map: "The Artist's Desk" (2026-10-01)
+Same layout and collision (all 33 `_add_solid` calls identical to 3b09061);
+only how things look changed.
+- `arena_surface.gdshader` gained 10 skins chosen per box in arena.gd: the
+  floor is a painting in progress (watercolour wash per zone, pencil guide
+  lines and circles, painter's tape along the walls); low cover = stacks of
+  three sketchbooks; hub pillars = crayon boxes; building walls = stretched
+  canvases with murals in the zone colour; centre platform = stacked boards
+  with an 8-point compass whose diagonal points use the four zone colours;
+  ramps/rails/window bars = rulers; outer walls = a corkboard in a wooden
+  frame; lane walls = a metal paint trough; SW deck = wooden planks.
+- New props (`create_desk_props.py`): crayons in each pillar, giant pinned
+  sketches on the corkboard (14), painter's tape at the corners.
+- **Landmarks** outside each wall (`create_landmarks.py`), rising far above
+  it, no shadows: NORTH giant easel with a painting, SOUTH jar of brushes, EAST
+  paint tubes, WEST desk lamp with a glowing bulb.
+- Removed from the dressing (models kept): the hub palette inlay (the compass
+  replaces it), the perimeter banners and the perimeter framed murals (the
+  pinned sketches replace them).
+- Sunlit floor 191/255 Forward+, 197/255 Compatibility (unchanged).
+
 ## Bugs discovered
 Stage 1 (2026-09-29), on `main` at `3b09061`:
 1. **TDM has no gameplay HUD.** `game.gd::_ready()` returns before

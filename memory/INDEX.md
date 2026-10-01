@@ -60,3 +60,9 @@ One line per note. Read this file at the start of every session.
 - [measure-performance-with-counters-not-fps.md](measure-performance-with-counters-not-fps.md)
   — tools/tests/perf_probe.gd; compare draw calls / headless physics ms, not
   fps; UI writes every frame and first-time loads were the real costs.
+- [online-branch-direction-differs-from-overhaul.md](online-branch-direction-differs-from-overhaul.md)
+  — Rocklyn's `online` branch: humans only, tracer shots without splats,
+  rewrites the same 5 files as the overhaul; check before editing them.
+- [character-select-dresses-the-canvas-runner.md](character-select-dresses-the-canvas-runner.md)
+  — customize screen dresses the Canvas Runner; bots and Survival enemies get
+  varied looks (enemy colour/outline never change); map keeps its layout.

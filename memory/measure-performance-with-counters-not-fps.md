@@ -28,3 +28,12 @@ How to apply: after any visual/UI change, run perf_probe windowed and headless
 and compare counters with the previous numbers in
 docs/VISUAL_OVERHAUL_CHANGELOG.md. Never write Label text or theme overrides
 every frame - only on change. See [[blender-pipeline-gotchas]].
+
+Update 2026-10-01: the web renderer (`--rendering-method gl_compatibility`)
+on this laptop has an INTERMITTENT stall: in roughly half of 15 s TDM runs it
+shows 30-50 hitches of ~100-120 ms, in the other half 0-1, with the same code.
+It also happens on the older committed build (77a7e49), so it is not caused
+by a recent change, and toggling parts of the scene "fixes" it by chance. Never
+judge a web perf change on one run - take at least 4 runs each side, and
+compare against a worktree of the previous commit. Cause still unknown (driver,
+GPU power state, or something in the game).

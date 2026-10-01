@@ -42,6 +42,70 @@ func _ready() -> void:
 	var burst := PaintFx.make(Color.WHITE, 1, 0.0, 0.02, 0.3)
 	add_child(burst)
 	burst.emitting = true
+	_warm_enemy_models()
+	_warm_scene.call_deferred()
+
+
+## Survival enemies (with their accessories) appear mid-wave, so draw one of
+## each now.
+func _warm_enemy_models() -> void:
+	for kind in ["sprayer", "bounder", "blotter", "monolith", "ghost"]:
+		var model := PaintKit.instance("enemy_" + kind)
+		if model == null:
+			continue
+		PaintKit.paint(model, Color.WHITE)
+		_add_copy(model)
+	for accessory in ["Acc_BERET", "Sticker_STAR"]:
+		var item := PaintKit.variant("enemy_accessories", accessory)
+		if item != null:
+			PaintKit.paint(item, Color.WHITE, Color.WHITE, true)
+			_add_copy(item)
+
+
+## Once everything in the match has been built (TDM bots spawn just after the
+## player), draw one tiny copy of every distinct mesh + material combination in
+## the match: the dressed runners' outfits, hats, packs and gun skins. Without
+## this the web build froze for ~150 ms the first time the camera turned
+## toward the other team.
+func _warm_scene() -> void:
+	await get_tree().process_frame
+	var player := get_tree().get_first_node_in_group("player")
+	if player == null or player.get_parent() == null:
+		return
+	var seen := {}
+	for node in player.get_parent().find_children("*", "MeshInstance3D", true, false):
+		var source := node as MeshInstance3D
+		if source.mesh == null or not source.is_visible_in_tree() or is_ancestor_of(source):
+			continue
+		var key := str(source.mesh.get_rid().get_id())
+		var materials: Array = []
+		for i in source.mesh.get_surface_count():
+			var m := source.get_active_material(i)
+			materials.append(m)
+			key += "|" + (str(m.get_rid().get_id()) if m != null else "-")
+		if source.material_overlay != null:
+			key += "|o" + str(source.material_overlay.get_rid().get_id())
+		if seen.has(key):
+			continue
+		seen[key] = true
+		var copy := MeshInstance3D.new()
+		copy.mesh = source.mesh
+		for i in materials.size():
+			copy.set_surface_override_material(i, materials[i])
+		copy.material_overlay = source.material_overlay
+		copy.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		copy.scale = Vector3.ONE * 0.002
+		add_child(copy)
+	# Keep them for a few more frames so every shader is compiled and drawn.
+	_age = 0.0
+
+
+## Adds a tiny copy of a whole model in front of the camera.
+func _add_copy(model: Node3D) -> void:
+	model.scale = Vector3.ONE * 0.002
+	for node in model.find_children("*", "GeometryInstance3D", true, false):
+		(node as GeometryInstance3D).cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(model)
 
 
 func _add(mesh: Mesh, material: Material, overlay: Material) -> void:
@@ -57,5 +121,5 @@ func _add(mesh: Mesh, material: Material, overlay: Material) -> void:
 func _process(delta: float) -> void:
 	# A few frames is enough for every shader to be compiled and drawn.
 	_age += delta
-	if _age > 0.25:
+	if _age > 0.3:
 		queue_free()

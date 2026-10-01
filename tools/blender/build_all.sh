@@ -26,7 +26,8 @@ for script in tools/blender/create_*.py; do
 	name="${name#create_}"
 	extra=()
 	if [[ -n "$PREVIEW_DIR" ]]; then
-		if [[ "$name" == "arena_props" ]]; then
+		# Scripts that export several GLBs take a preview FOLDER instead.
+		if [[ "$name" == "arena_props" || "$name" == "desk_props" || "$name" == "landmarks" ]]; then
 			extra=(-- --previews "$PREVIEW_DIR")
 		else
 			extra=(-- --preview "$PREVIEW_DIR/$name.png")

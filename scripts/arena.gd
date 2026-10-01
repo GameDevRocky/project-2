@@ -72,17 +72,34 @@ const COVER_TEAL := Color("#3F8886")
 const COVER_PALE := Color("#CBC2D6")
 
 
-# --- Area identities -----------------------------------------------------------
-# Each area of the map gets a painted band on its walls in its own muted studio
-# colour, so you can tell where you are at a glance and learn the room faster.
-# These are the same "dried paint" colours as the decoration: dusty, never the
-# bright enemy or team colours.
-const BAND_NW := {"color": Color("#C9A45C"), "center": 2.3, "height": 0.36}    # paint storage, ochre
-const BAND_NE := {"color": Color("#9C8FC4"), "center": 2.6, "height": 0.36}    # mixing room, lilac
-const BAND_SW := {"color": Color("#B7806E"), "center": 2.2, "height": 0.36}    # gallery, clay
-const BAND_LANE := {"color": Color("#7FA9A3"), "center": -0.9, "height": 0.32} # runoff channel, sea-glass
-const BAND_PILLAR := {"color": Color("#B7B2C6"), "center": 3.75, "height": 0.5} # hub pillars: brush-handle ferrules
-const BAND_SKIRT := {"color": Color("#4E4870"), "center": 0.25, "height": 0.5}  # perimeter skirting
+# --- "The Artist's Desk" -----------------------------------------------------
+# The arena is themed as the top of a giant artist's desk, and every collision
+# box is PAINTED to look like an object on it (scripts/visual/arena_surface.
+# gdshader) without changing its shape - so what you see is always exactly what
+# you can hit or hide behind. Which look each box gets:
+const SKIN_PLAIN := 0
+const SKIN_FLOOR := 1          # the canvas being painted, with a wash per zone
+const SKIN_SKETCHBOOKS := 2    # low cover
+const SKIN_CRAYON_BOX := 3     # the four hub pillars
+const SKIN_CANVAS_WALL := 4    # building walls: stretched canvases with murals
+const SKIN_BOARD_STACK := 5    # the centre platform, compass rose on top
+const SKIN_RULER := 6          # ramps, railings, window bars
+const SKIN_CORKBOARD := 7      # the outer walls
+const SKIN_TROUGH := 8         # the sunken lane's walls: a metal paint trough
+const SKIN_DRAWING_BOARD := 9  # the gallery's upper deck
+
+# Each building is a different zone colour, repeated in its mural, in the floor
+# wash around it, and on its point of the centre compass, so you can tell where
+# you are at a glance: NW paint storage = ochre, NE mixing room = lilac,
+# SW gallery = clay, the south lane = sea-glass.
+const OCHRE := Color("#C9A45C")
+const LILAC := Color("#9C8FC4")
+const CLAY := Color("#B7806E")
+const SEAGLASS := Color("#7FA9A3")
+const CANVAS := Color("#CFC6B6")
+const ZONE_NW := {"skin": SKIN_CANVAS_WALL, "albedo": CANVAS, "zone": OCHRE, "accent": CLAY}
+const ZONE_NE := {"skin": SKIN_CANVAS_WALL, "albedo": CANVAS, "zone": LILAC, "accent": SEAGLASS}
+const ZONE_SW := {"skin": SKIN_CANVAS_WALL, "albedo": CANVAS, "zone": CLAY, "accent": OCHRE}
 
 
 ## Set dressing: decoration only. NONE of it has collision, and every piece
@@ -91,8 +108,13 @@ const BAND_SKIRT := {"color": Color("#4E4870"), "center": 0.25, "height": 0.5}  
 ## on the floor. Each entry: model, position, turn about Y in degrees, scale.
 ## Wall pieces are modelled facing +Z; the turn points them into the room.
 const DRESSING := [
-	# Central hub: a palette inlaid in the platform top, a sculpture far overhead.
-	["prop_palette_inlay", Vector3(0.0, 0.802, 0.0), 18.0, 1.0],
+	# Central hub: crayons poking out of the four crayon-box pillars, and a
+	# sculpture hanging far overhead. (The compass rose is painted on the
+	# platform by the surface shader.)
+	["prop_crayon_cluster", Vector3(-10.0, 4.5, -10.0), 0.0, 1.0],
+	["prop_crayon_cluster", Vector3(10.0, 4.5, -10.0), 90.0, 1.0],
+	["prop_crayon_cluster", Vector3(-10.0, 4.5, 10.0), 180.0, 1.0],
+	["prop_crayon_cluster", Vector3(10.0, 4.5, 10.0), 270.0, 1.0],
 	["prop_hub_mobile", Vector3(0.0, 8.7, 0.0), 0.0, 1.0],
 	# NW paint storage: paint can stacks on the tops of its walls.
 	["prop_can_stack", Vector3(-34.0, 3.8, -30.5), 0.0, 1.0],
@@ -101,28 +123,30 @@ const DRESSING := [
 	# NE mixing room: mixing vats on its north wall.
 	["prop_mixing_vat", Vector3(23.0, 4.2, -34.0), 0.0, 1.0],
 	["prop_mixing_vat", Vector3(33.0, 4.2, -34.0), 140.0, 1.0],
-	# SW gallery: framed canvases on the inside of its west wall.
+	# SW gallery: framed paintings hung on its canvas walls.
 	["prop_frame", Vector3(-37.6, 1.1, 31.0), 90.0, 1.0],
 	["prop_frame", Vector3(-37.6, 1.1, 34.8), 90.0, 1.0],
 	["prop_frame", Vector3(-37.6, 3.75, 24.0), 90.0, 1.0],
-	# South lane runoff channel: pipes along the top of the lane walls.
+	# South lane: pipes along the top of the paint trough.
 	["prop_pipe_run", Vector3(7.5, -0.35, 24.0), -90.0, 1.0],
 	["prop_pipe_run", Vector3(7.5, -0.35, 34.0), -90.0, 1.0],
 	["prop_pipe_run", Vector3(-7.5, -0.35, 29.0), 90.0, 1.0],
-	# Perimeter: murals and banners high on the walls (above 4.5 m) ...
-	["prop_frame", Vector3(0.0, 5.0, -45.0), 0.0, 1.6],
-	["prop_frame", Vector3(0.0, 5.0, 45.0), 180.0, 1.6],
-	["prop_frame", Vector3(45.0, 5.0, 0.0), -90.0, 1.6],
-	["prop_frame", Vector3(-45.0, 5.0, 0.0), 90.0, 1.6],
-	["prop_banner", Vector3(-15.0, 8.7, -45.0), 0.0, 1.0],
-	["prop_banner", Vector3(15.0, 8.7, -45.0), 0.0, 1.0],
-	["prop_banner", Vector3(-18.0, 8.7, 45.0), 180.0, 1.0],
-	["prop_banner", Vector3(18.0, 8.7, 45.0), 180.0, 1.0],
-	["prop_banner", Vector3(45.0, 8.7, -15.0), -90.0, 1.0],
-	["prop_banner", Vector3(45.0, 8.7, 15.0), -90.0, 1.0],
-	["prop_banner", Vector3(-45.0, 8.7, -15.0), 90.0, 1.0],
-	["prop_banner", Vector3(-45.0, 8.7, 15.0), 90.0, 1.0],
-	# ... and giant art tools standing flush in the four corners.
+	# The corkboard walls: giant sketches pinned up all round (flat, <= 3 cm).
+	["sheet:0", Vector3(-24.0, 1.6, -45.0), 0.0, 1.0],
+	["sheet:2", Vector3(-6.0, 3.4, -45.0), 0.0, 1.0],
+	["sheet:3", Vector3(12.0, 2.0, -45.0), 0.0, 1.0],
+	["sheet:1", Vector3(30.0, 4.2, -45.0), 0.0, 1.0],
+	["sheet:1", Vector3(-30.0, 3.8, 45.0), 180.0, 1.0],
+	["sheet:3", Vector3(-12.0, 1.4, 45.0), 180.0, 1.0],
+	["sheet:0", Vector3(20.0, 2.6, 45.0), 180.0, 1.0],
+	["sheet:2", Vector3(45.0, 1.8, -24.0), -90.0, 1.0],
+	["sheet:0", Vector3(45.0, 3.6, -6.0), -90.0, 1.0],
+	["sheet:3", Vector3(45.0, 1.5, 14.0), -90.0, 1.0],
+	["sheet:1", Vector3(45.0, 4.4, 30.0), -90.0, 1.0],
+	["sheet:3", Vector3(-45.0, 4.0, -14.0), 90.0, 1.0],
+	["sheet:2", Vector3(-45.0, 1.7, 4.0), 90.0, 1.0],
+	["sheet:0", Vector3(-45.0, 3.2, 12.0), 90.0, 1.0],
+	# Giant art tools standing flush in the four corners.
 	["prop_giant_brush", Vector3(41.5, 0.0, -45.0), 0.0, 1.25],
 	["prop_paint_tube", Vector3(45.0, 0.0, -41.5), -90.0, 1.0],
 	["prop_paint_tube", Vector3(41.5, 0.0, 45.0), 180.0, 1.0],
@@ -131,6 +155,26 @@ const DRESSING := [
 	["prop_paint_tube", Vector3(-45.0, 0.0, 41.5), 90.0, 1.0],
 	["prop_paint_tube", Vector3(-41.5, 0.0, -45.0), 0.0, 1.0],
 	["prop_giant_brush", Vector3(-45.0, 0.0, -41.5), 90.0, 1.25],
+	# Strips of painter's tape holding the canvas down at the corners (flat).
+	["prop_tape_strip", Vector3(-39.5, 0.0, -39.5), 45.0, 1.0],
+	["prop_tape_strip", Vector3(39.5, 0.0, -39.5), -45.0, 1.0],
+	["prop_tape_strip", Vector3(39.5, 0.0, 39.5), 45.0, 1.0],
+	["prop_tape_strip", Vector3(-39.5, 0.0, 39.5), -45.0, 1.0],
+]
+
+## Giant desk objects OUTSIDE the walls, one per side, rising far above them:
+## the first landmarks you learn ("the lamp is west"). Model, position, turn,
+## scale.
+## Far outside the arena, so they never touch gameplay; no shadows, so the
+## lighting inside is unchanged.
+const LANDMARKS := [
+	["lm_easel", Vector3(-6.0, 0.0, -76.0), 0.0, 1.45],
+	["lm_brush_jar", Vector3(8.0, 0.0, 74.0), 180.0, 1.45],
+	# Raised: the walls hide everything below ~14 m out here, and the tubes'
+	# coloured shoulders and paint curl must clear them. Its base is never
+	# visible from inside, so lifting it costs nothing.
+	["lm_paint_tubes", Vector3(68.0, 9.0, 6.0), -90.0, 1.4],
+	["lm_desk_lamp", Vector3(-76.0, 0.0, -4.0), 90.0, 1.4],
 ]
 
 ## Old dried paint on the floor where fights happen (flat, 1 cm thick):
@@ -315,8 +359,8 @@ func _build_light() -> void:
 func _build_floor() -> void:
 	# Leave a cutout for the recessed lower route; every section retains the
 	# original collision-backed box floor.
-	# Floors get the scattered dried-paint flecks of a well-used studio floor.
-	_surface = {"fleck": 0.3}
+	# The floor is the canvas being painted: zone washes, pencil guides, flecks.
+	_surface = {"skin": SKIN_FLOOR, "fleck": 0.3}
 	var span := ARENA_HALF * 2.0
 	var north_depth := PIT_NORTH + ARENA_HALF
 	_add_solid(Vector3(0.0, -0.5, (-ARENA_HALF + PIT_NORTH) * 0.5),
@@ -337,8 +381,8 @@ func _build_walls() -> void:
 	var span: float = ARENA_HALF * 2.0
 	var offset: float = ARENA_HALF + WALL_THICKNESS * 0.5
 	var wall_color := WALL_COLOR
-	# A darker skirting along the foot of the outer walls grounds them.
-	_surface = {"band": BAND_SKIRT}
+	# The outer walls are a giant cork pinboard in a wooden frame.
+	_surface = {"skin": SKIN_CORKBOARD}
 
 	# North and south.
 	_add_solid(Vector3(0.0, WALL_HEIGHT * 0.5, -offset),
@@ -367,31 +411,38 @@ func _build_cover() -> void:
 		# actually think about placing cover. Boxes are centred on their origin,
 		# so lift each one by half its height to stand it on the floor.
 		var centre: Vector3 = pos + Vector3(0.0, size.y * 0.5, 0.0)
-		# The four tall hub pillars get a metal ferrule band near the top, so
-		# they read as giant brush handles planted round the centre.
-		_surface = {"band": BAND_PILLAR} if piece["color"] == "charcoal" else {}
+		# The four tall hub pillars are crayon boxes, the centre platform a
+		# stack of boards, and every other piece a stack of sketchbooks.
+		match str(piece["color"]):
+			"charcoal": _surface = {"skin": SKIN_CRAYON_BOX}
+			"pale": _surface = {"skin": SKIN_BOARD_STACK}
+			_: _surface = {"skin": SKIN_SKETCHBOOKS}
 		_add_solid(centre, size, _palette(piece["color"]), 0.9)
 	_surface = {}
 
 
 func _build_sunken_route() -> void:
-	_surface = {"fleck": 0.3}
+	_surface = {"skin": SKIN_FLOOR, "fleck": 0.3}
 	_add_solid(Vector3(0.0, -PIT_DEPTH - 0.5, (PIT_NORTH + PIT_SOUTH) * 0.5),
 		Vector3(PIT_HALF_WIDTH * 2.0, 1.0, PIT_SOUTH - PIT_NORTH), FLOOR_COLOR, 0.95)
-	_surface = {"band": BAND_LANE}
+	# The lane is a metal paint trough with ruler ramps at both ends.
+	_surface = {"skin": SKIN_TROUGH}
 	# Retaining-wall openings align with collision-backed ramps at either end.
 	for end_z in [PIT_NORTH + 0.1, PIT_SOUTH - 0.1]:
 		for side_x in [-5.3, 5.3]:
 			_add_solid(Vector3(side_x, -1.15, end_z),
 				Vector3(5.4, 2.5, 0.35), COVER_PALE, 0.9)
+	_surface = {"skin": SKIN_RULER}
 	_add_solid(Vector3(0.0, -1.33, PIT_NORTH + 3.0),
 		Vector3(5.0, 0.4, 6.5), COVER_SAGE, 0.9, true, Vector3(21.25, 0.0, 0.0))
 	_add_solid(Vector3(0.0, -1.33, PIT_SOUTH - 3.0),
 		Vector3(5.0, 0.4, 6.5), COVER_ROSE, 0.9, true, Vector3(-21.25, 0.0, 0.0))
+	_surface = {"skin": SKIN_TROUGH}
 	_add_solid(Vector3(-7.75, -1.2, (PIT_NORTH + PIT_SOUTH) * 0.5),
 		Vector3(0.5, 2.4, PIT_SOUTH - PIT_NORTH), COVER_SLATE, 0.9)
 	_add_solid(Vector3(7.75, -1.2, (PIT_NORTH + PIT_SOUTH) * 0.5),
 		Vector3(0.5, 2.4, PIT_SOUTH - PIT_NORTH), COVER_SLATE, 0.9)
+	_surface = {"skin": SKIN_SKETCHBOOKS}
 	_add_solid(Vector3(0.0, -1.55, 27.0), Vector3(4.5, 1.7, 0.7), COVER_TEAL, 0.9)
 	_add_solid(Vector3(-3.5, -1.55, 33.0), Vector3(4.5, 1.7, 0.7), COVER_ROSE, 0.9)
 	_surface = {}
@@ -399,23 +450,26 @@ func _build_sunken_route() -> void:
 
 func _build_buildings() -> void:
 	# Northwest compact room: three exits support quick close-range flanks.
-	_surface = {"band": BAND_NW}
+	_surface = ZONE_NW
 	_build_room_shell(Vector3(-28.0, 0.0, -28.0), 12.0, 10.0, 3.8,
 		COVER_PALE, [&"north", &"south", &"east"])
+	_surface = {"skin": SKIN_RULER}
 	_add_solid(Vector3(-34.0, 2.8, -28.0), Vector3(0.35, 0.45, 3.0), COVER_ROSE, 0.8)
 	_add_solid(Vector3(-22.0, 2.8, -28.0), Vector3(0.35, 0.45, 3.0), COVER_TEAL, 0.8)
 
 	# Northeast two-room building, open to west, east, and south approaches.
-	_surface = {"band": BAND_NE}
+	_surface = ZONE_NE
 	_build_room_shell(Vector3(28.0, 0.0, -27.0), 17.0, 14.0, 4.2,
 		COVER_SAGE, [&"south", &"west", &"east"])
 	_build_partition(Vector3(28.0, 0.0, -29.0), 12.0, 3.4, 0.55, COVER_SLATE)
 
 	# Southwest building: multiple ground exits, raised firing lane, walk-up ramp.
-	_surface = {"band": BAND_SW}
+	_surface = ZONE_SW
 	_build_room_shell(Vector3(-28.0, 0.0, 28.0), 20.0, 18.0, 5.0,
 		COVER_ROSE, [&"north", &"east", &"south"])
+	_surface = {"skin": SKIN_DRAWING_BOARD}
 	_add_solid(Vector3(-28.0, 3.2, 24.0), Vector3(14.0, 0.4, 8.0), COVER_PALE, 0.85)
+	_surface = {"skin": SKIN_RULER}
 	# The high end meets the south edge of the upper deck instead of running
 	# underneath it, so the player can walk cleanly from slope onto floor.
 	_add_solid(Vector3(-22.0, 1.6, 32.25), Vector3(3.0, 0.4, 8.5), COVER_TEAL, 0.85,
@@ -566,15 +620,14 @@ func _add_solid(centre: Vector3, size: Vector3, box_color: Color,
 func _surface_material(box_color: Color, roughness: float, size: Vector3) -> Material:
 	var mat := ShaderMaterial.new()
 	mat.shader = SurfaceShader
-	mat.set_shader_parameter("albedo", box_color)
+	mat.set_shader_parameter("skin", int(_surface.get("skin", SKIN_PLAIN)))
+	mat.set_shader_parameter("albedo", _surface.get("albedo", box_color))
 	mat.set_shader_parameter("roughness_value", roughness)
 	mat.set_shader_parameter("box_size", size)
 	mat.set_shader_parameter("fleck_amount", float(_surface.get("fleck", 0.0)))
-	if _surface.has("band"):
-		var band: Dictionary = _surface["band"]
-		mat.set_shader_parameter("band_color", Color(band["color"], 0.85))
-		mat.set_shader_parameter("band_center", float(band["center"]))
-		mat.set_shader_parameter("band_height", float(band["height"]))
+	if _surface.has("zone"):
+		mat.set_shader_parameter("zone_color", _surface["zone"])
+		mat.set_shader_parameter("zone_accent", _surface["accent"])
 	return mat
 
 
@@ -589,7 +642,12 @@ func _build_dressing() -> void:
 	dressing.name = "Dressing"
 	add_child(dressing)
 	for entry in DRESSING:
-		var prop := PaintKit.instance(entry[0])
+		var model_name: String = entry[0]
+		var prop: Node3D
+		if model_name.begins_with("sheet:"):
+			prop = PaintKit.variant("prop_pinned_sheet", "Sheet_" + model_name.substr(6))
+		else:
+			prop = PaintKit.instance(model_name)
 		if prop == null:
 			continue
 		dressing.add_child(prop)
@@ -598,8 +656,17 @@ func _build_dressing() -> void:
 		prop.scale = Vector3.ONE * float(entry[3])
 		# Flat pieces hung on walls or laid on the floor throw no visible
 		# shadow, so skip drawing them into the shadow maps at all.
-		if entry[0] in ["prop_frame", "prop_banner", "prop_pipe_run", "prop_palette_inlay"]:
+		if model_name in ["prop_frame", "prop_pipe_run", "prop_tape_strip"] or model_name.begins_with("sheet:"):
 			PaintKit.set_shadows(prop, false)
+	for entry in LANDMARKS:
+		var landmark := PaintKit.instance(entry[0])
+		if landmark == null:
+			continue
+		dressing.add_child(landmark)
+		landmark.position = entry[1]
+		landmark.rotation.y = deg_to_rad(entry[2])
+		landmark.scale = Vector3.ONE * float(entry[3])
+		PaintKit.set_shadows(landmark, false)
 	for i in FLOOR_STAINS.size():
 		var stain_mesh := PaintKit.mesh("prop_splat_decor", "Decor_%d" % (i % 4))
 		if stain_mesh == null:

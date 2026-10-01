@@ -20,6 +20,23 @@ extends Node3D
 ## an event (on_fire, on_melee). Nothing here can change what the enemy does.
 
 const PaintKit = preload("res://scripts/visual/paint_kit.gd")
+const RunnerDresser = preload("res://scripts/visual/runner_dresser.gd")
+const Data = preload("res://scripts/character_customization_data.gd")
+
+## Survival enemies' cosmetic extras (models/generated/enemy_accessories.glb).
+## Small things on top or flat on the front: they never change an
+## archetype's colour or outline, so a Sprayer always reads as a Sprayer.
+const TOP_ACCESSORIES := ["Acc_BERET", "Acc_PARTY_HAT", "Acc_PROPELLER_CAP", "Acc_BOW", "Acc_TINY_CROWN", "Acc_SPROUT"]
+const STICKERS := ["Sticker_STAR", "Sticker_SMILEY", "Sticker_BANDAGE", "Sticker_NUMBER7"]
+## Which part of each enemy a hat sits on top of (it rides along with it), and
+## how big a hat that part can wear.
+const HAT_ANCHOR := {
+	"sprayer": ["Body", 0.8], "bounder": ["Body", 0.8], "blotter": ["Lid", 0.95],
+	"monolith": ["TopSlab", 1.6], "ghost": ["Body", 1.0],
+}
+## Stickers only where there is a flat-ish front to stick them to (on the
+## others the front is a nozzle crown, a glass tank or a curved shell).
+const STICKER_KINDS := ["monolith", "ghost"]
 
 ## The enemy this visual belongs to. Untyped for the project's usual reason:
 ## `health` is a variable this project added, which a CharacterBody3D-typed
@@ -46,38 +63,20 @@ func setup(enemy, visual_kind: String, accent: Color, team: Color) -> bool:
 	name = "Visual"
 	_time = randf() * 10.0   # so a pack does not animate in lock-step
 	if kind == "runner":
-		model = PaintKit.instance("canvas_runner")
+		# The runner is dressed from the bot's own customization (outfit, suit,
+		# hat, mask, back bling, gun skin) by the same code the menu preview
+		# uses. Team marks are always drawn in the team colour.
+		model = RunnerDresser.build(_runner_customization(enemy), team)
 		if model == null:
 			return false
 		add_child(model)
-		PaintKit.paint(model, team, team)
-		var pack := PaintKit.instance("chromatic_reservoir")
-		var socket_back := PaintKit.part(model, "Socket_Back")
-		if pack != null and socket_back != null:
-			socket_back.add_child(pack)
-			PaintKit.paint(pack, team, team)
-			# Small parts on a moving character: their shadows are too small
-			# to see, but each one would be drawn again for every shadow pass.
-			PaintKit.set_shadows(pack, false)
-		# The bot's gun is the ONE-PIECE copy of the Paint Blaster (one node,
-		# four materials) rather than the 27-part first-person model: with 19
-		# bots on the field that is the difference between ~20 and ~500 nodes
-		# to move every frame.
-		var gun := PaintKit.instance("paint_blaster_prop")
-		var socket_hand := PaintKit.part(model, "Socket_Hand_R")
-		if gun != null and socket_hand != null:
-			socket_hand.add_child(gun)
-			PaintKit.set_shadows(gun, false)
-			# Bots fire team-coloured paint, so their brush and tank are team
-			# coloured too; the skin band takes the team colour as well.
-			PaintKit.paint(gun, team, team, true,
-				{"PK_Skin": PaintKit.role_material("PK_Team", team.darkened(0.25))})
 	else:
 		model = PaintKit.instance("enemy_" + kind)
 		if model == null:
 			return false
 		add_child(model)
 		PaintKit.paint(model, accent)
+		_add_enemy_accessory()
 	for part_name in ["Leg_L", "Leg_R", "NozzleFan", "Spring_L", "Spring_R", "Arm_L", "Arm_R",
 			"Roller_L", "Roller_R", "Fill", "Mortar", "Glob", "TopSlab", "Cannon", "Shield",
 			"Eyes", "Strip_0", "Strip_1", "Strip_2", "Strip_3", "Strip_4"]:
@@ -91,6 +90,79 @@ func setup(enemy, visual_kind: String, accent: Color, team: Color) -> bool:
 		_eye_material = PaintKit.role_material("PK_AccentGlow", accent).duplicate() as StandardMaterial3D
 		(_parts["Eyes"] as GeometryInstance3D).material_override = _eye_material
 	return true
+
+
+## The look of a TDM bot: from its lobby record when it has one, otherwise a
+## random look seeded by its name, so the same bot keeps the same outfit every
+## time it respawns.
+func _runner_customization(enemy) -> Dictionary:
+	var custom: Dictionary = enemy.get("customization") if enemy.get("customization") != null else {}
+	if custom.has("skin"):
+		return custom
+	var rng := RandomNumberGenerator.new()
+	rng.seed = hash(str(enemy.name))
+	return Data.random_bot_customization(rng, str(enemy.get("tdm_team")))
+
+
+## Gives a Survival enemy a random small accessory: usually a little hat on top,
+## sometimes a sticker on its front, sometimes nothing. Purely cosmetic.
+func _add_enemy_accessory() -> void:
+	if not HAT_ANCHOR.has(kind):
+		return
+	var roll := randf()
+	if roll < 0.35:
+		return
+	var anchor_info: Array = HAT_ANCHOR[kind]
+	var anchor := PaintKit.part(model, str(anchor_info[0]))
+	if anchor == null:
+		anchor = model
+	var box := _local_aabb(anchor)
+	if box.size == Vector3.ZERO:
+		return
+	if roll < 0.8 or not kind in STICKER_KINDS:
+		var hat := PaintKit.variant("enemy_accessories", TOP_ACCESSORIES.pick_random())
+		if hat == null:
+			return
+		anchor.add_child(hat)
+		hat.transform = Transform3D(Basis(Vector3.UP, randf_range(-0.5, 0.5)) * float(anchor_info[1]),
+			Vector3(box.get_center().x, box.end.y - 0.02, box.get_center().z))
+		PaintKit.paint(hat, Color.WHITE, Color.WHITE, true)
+	else:
+		var sticker := PaintKit.variant("enemy_accessories", STICKERS.pick_random())
+		if sticker == null:
+			return
+		anchor.add_child(sticker)
+		# On the front (+Z, the way enemies face) at mid height, slightly tilted.
+		sticker.transform = Transform3D(Basis(Vector3.FORWARD, randf_range(-0.4, 0.4)),
+			Vector3(box.get_center().x, box.position.y + box.size.y * 0.55, box.end.z - 0.005))
+		PaintKit.paint(sticker, Color.WHITE, Color.WHITE, true)
+
+
+## The bounding box of a part's meshes, in that part's own space.
+func _local_aabb(node: Node3D) -> AABB:
+	var box := AABB()
+	var first := true
+	var inverse := node.global_transform.affine_inverse() if node.is_inside_tree() else Transform3D.IDENTITY
+	for mesh_node in [node] + node.find_children("*", "MeshInstance3D", true, false):
+		if not mesh_node is MeshInstance3D:
+			continue
+		var mi := mesh_node as MeshInstance3D
+		var to_local: Transform3D = inverse * mi.global_transform if node.is_inside_tree() else _relative(node, mi)
+		var part_box: AABB = to_local * mi.get_aabb()
+		box = part_box if first else box.merge(part_box)
+		first = false
+	return box
+
+
+## Transform of `child` relative to `ancestor`, for nodes not yet in the tree.
+func _relative(ancestor: Node3D, child: Node3D) -> Transform3D:
+	var t := Transform3D.IDENTITY
+	var n: Node = child
+	while n != null and n != ancestor:
+		if n is Node3D:
+			t = (n as Node3D).transform * t
+		n = n.get_parent()
+	return t
 
 
 # ============================================================================

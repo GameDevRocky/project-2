@@ -10,12 +10,14 @@ extends SceneTree
 ## how visual changes get checked. It opens a real game window for a minute.
 ##
 ## Run (from the project folder, with the Godot console exe):
-##   godot --path . --script res://tools/tests/screenshots.gd -- --out=<dir> [--res=1280x720] [--only=menu|tdm|survival|showcase|arena]
+##   godot --path . --script res://tools/tests/screenshots.gd -- --out=<dir> [--res=1280x720] [--only=menu|tdm|survival|showcase|arena|wardrobe]
 ##
 ## "showcase" is not a normal game state: it builds a Survival arena with no
 ## waves, then places one of each enemy (frozen), a core of every pair colour,
 ## a healing station and a few paint splats in front of the camera, so the
 ## generated models can be judged in the real game with the real scripts.
+## "wardrobe" lines up dressed Canvas Runners (every outfit incl. bot-only,
+## every hat, mask, back bling and gun skin) under in-game lighting.
 ## "arena" flies a free camera to seven viewpoints (hub, the three buildings,
 ## the south lane, a corner, an overview) and prints the average brightness
 ## of a patch of sunlit floor, to compare lighting between changes.
@@ -71,6 +73,8 @@ func _run() -> void:
 		await _showcase_pass()
 	if _only == "" or _only == "arena":
 		await _arena_pass()
+	if _only == "wardrobe":
+		await _wardrobe_pass()
 	quit()
 
 
@@ -103,11 +107,26 @@ func _menu_pass() -> void:
 	menu._open_customization("main")
 	await _wait(1.3)
 	await _snap("menu_05_customize_skins")
-	menu.selected_category = "BACK BLING"
-	menu._show_customization()
+	# Test-only picks, made through the same function the buttons call.
+	menu._pick_category("HATS")
+	menu._select_option("HATS", 2)
+	menu._pick_category("MASKS")
+	menu._select_option("MASKS", 3)
+	await _wait(0.6)
+	await _snap("menu_05b_customize_hat_mask")
+	menu._pick_category("BACK BLING")
+	menu._select_option("BACK BLING", 4)
 	menu.menu_content.modulate.a = 1.0
-	await _wait(0.4)
+	await _wait(1.0)
 	await _snap("menu_06_customize_backbling")
+	menu._pick_category("GUN SKINS")
+	menu._select_option("GUN SKINS", 9)
+	await _wait(1.0)
+	await _snap("menu_06b_customize_gun")
+	menu._pick_category("SKINS")
+	menu._select_option("SKINS", 6)
+	await _wait(0.6)
+	await _snap("menu_06c_customize_outfit")
 	menu.customization["skin"] = "ninja"
 	menu.selected_category = "HATS"
 	menu._show_customization()
@@ -181,6 +200,10 @@ func _tdm_pass() -> void:
 
 func _survival_pass() -> void:
 	var m = load("res://scenes/match.tscn").instantiate()
+	# The look the menu would hand over; gun skin 3 = SUNBURST.
+	var custom: Dictionary = load("res://scripts/character_customization_data.gd").create_session_data()
+	custom["gun_skin"] = 3
+	m.customization = custom
 	root.add_child(m)
 	current_scene = m
 	await _wait(3.5)
@@ -366,6 +389,12 @@ func _arena_pass() -> void:
 		["arena_05_south_lane", Vector3(0.0, -0.6, 19.5), Vector3(0.0, -1.6, 38.0)],
 		["arena_06_corner", Vector3(38.5, 1.7, -30.0), Vector3(44.0, 2.2, -43.5)],
 		["arena_07_overview", Vector3(34.0, 14.0, 34.0), Vector3(0.0, 0.0, 0.0)],
+		["arena_08_books_close", Vector3(18.5, 1.6, 7.5), Vector3(15.0, 0.9, 3.0)],
+		["arena_09_platform", Vector3(6.5, 4.5, 6.5), Vector3(0.0, 0.8, 0.0)],
+		["arena_10_look_north", Vector3(0.0, 1.7, 15.0), Vector3(0.0, 10.0, -45.0)],
+		["arena_11_look_south", Vector3(0.0, 1.7, -15.0), Vector3(0.0, 10.0, 45.0)],
+		["arena_12_look_east", Vector3(-15.0, 1.7, 0.0), Vector3(45.0, 10.0, 0.0)],
+		["arena_13_look_west", Vector3(15.0, 1.7, 0.0), Vector3(-45.0, 10.0, 0.0)],
 	]
 	for view in views:
 		cam.global_position = view[1]
@@ -386,5 +415,84 @@ func _arena_pass() -> void:
 			var c := img.get_pixel(x, y)
 			total += (c.r + c.g + c.b) / 3.0
 	print("[shot] sunlit floor average = %.0f / 255" % (total / 1600.0 * 255.0))
+	m.queue_free()
+	await _wait(0.3)
+
+
+func _wardrobe_pass() -> void:
+	var Data = load("res://scripts/character_customization_data.gd")
+	var Dresser = load("res://scripts/visual/runner_dresser.gd")
+	var m = load("res://scenes/match.tscn").instantiate()
+	root.add_child(m)
+	current_scene = m
+	m._run_over = true
+	await _wait(0.5)
+	m.get_node("HUD").visible = false
+	m.get_node("Player").visible = false
+	var cam := Camera3D.new()
+	cam.fov = 50.0
+	m.add_child(cam)
+	cam.current = true
+	# Each sheet: up to 7 runners in a row, each a {customization, team}.
+	var sheets := {}
+	var outfits: Array = []
+	for skin in Data.SKINS + Data.BOT_SKINS:
+		outfits.append({"skin": str(skin.id), "back_bling": outfits.size() % Data.BACK_BLING.size(), "gun_skin": outfits.size() % 10})
+	sheets["wardrobe_outfits_1"] = outfits.slice(0, 7)
+	sheets["wardrobe_outfits_2"] = outfits.slice(7, 14)
+	var hats: Array = []
+	for i in range(1, Data.HATS.size()):
+		hats.append({"skin": "default", "body_color": i % 10, "hat": i, "mask": 0})
+	sheets["wardrobe_hats_1"] = hats.slice(0, 5)
+	sheets["wardrobe_hats_2"] = hats.slice(5, 9)
+	var masks: Array = []
+	for i in range(1, Data.MASKS.size()):
+		masks.append({"skin": "default", "body_color": (i + 3) % 10, "mask": i})
+	sheets["wardrobe_masks_1"] = masks.slice(0, 5)
+	sheets["wardrobe_masks_2"] = masks.slice(5, 9)
+	var backs: Array = []
+	for i in Data.BACK_BLING.size():
+		backs.append({"skin": "default", "body_color": i % 10, "back_bling": i, "gun_skin": i % 10})
+	sheets["wardrobe_back_1"] = backs.slice(0, 6)
+	sheets["wardrobe_back_2"] = backs.slice(6, 12)
+	var guns: Array = []
+	for i in 10:
+		guns.append({"skin": "default", "body_color": 4, "gun_skin": i})
+	sheets["wardrobe_guns_1"] = guns.slice(0, 5)
+	sheets["wardrobe_guns_2"] = guns.slice(5, 10)
+	for sheet_name in sheets:
+		var row: Array = sheets[sheet_name]
+		var built: Array = []
+		for i in row.size():
+			var custom: Dictionary = Data.create_session_data()
+			custom.merge(row[i], true)
+			var team := Color("#FF627E") if i % 2 == 0 else Color("#58D7F2")
+			var runner = Dresser.build(custom, team)
+			if runner == null:
+				continue
+			m.add_child(runner)
+			runner.global_position = Vector3(26.0 + (i - (row.size() - 1) * 0.5) * 1.35, 0.0, 0.0)
+			built.append(runner)
+		var back_view: bool = sheet_name.begins_with("wardrobe_back")
+		var close: bool = sheet_name.begins_with("wardrobe_hats") or sheet_name.begins_with("wardrobe_masks") or sheet_name.begins_with("wardrobe_guns")
+		var width := maxf(row.size() * 1.35, 3.0)
+		var dist := width * 0.95 if not close else width * 0.8
+		var height := 1.0 if not close else 1.35
+		var z := dist if not back_view else -dist
+		for r in built:
+			r.rotation.y = 0.0 if not back_view else 0.0
+		cam.global_position = Vector3(26.0, height + 0.15, z)
+		cam.look_at(Vector3(26.0, height, 0.0))
+		await _wait(0.4)
+		await _snap(sheet_name)
+		if back_view:
+			# Also a 3/4 view of the packs.
+			cam.global_position = Vector3(26.0 + width * 0.55, height + 0.6, -dist * 0.8)
+			cam.look_at(Vector3(26.0, height, 0.0))
+			await _wait(0.2)
+			await _snap(sheet_name + "_34")
+		for r in built:
+			r.queue_free()
+		await _wait(0.1)
 	m.queue_free()
 	await _wait(0.3)

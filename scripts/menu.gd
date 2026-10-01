@@ -13,6 +13,8 @@ const MAX_PER_TEAM := 10
 const JOIN_DELAY := 1.8
 const COUNTDOWN_SECONDS := 5
 const CATEGORIES := ["SKINS", "BODY COLORS", "HATS", "MASKS", "GUN SKINS", "BACK BLING"]
+## On-screen names for the categories (the keys stay the data's names).
+const CATEGORY_LABELS := {"SKINS": "OUTFITS", "BODY COLORS": "SUIT COLORS"}
 const ITEM_NAMES := {
 	"HATS": Data.HATS,
 	"MASKS": Data.MASKS,
@@ -366,9 +368,19 @@ func _show_main() -> void:
 	_button(column, "QUIT", func(): get_tree().quit())
 	_spacer(column)
 	_label(column, "LOCAL SESSION  •  GLOWFALL TEST BAY", &"DimLabel")
-	play.grab_focus.call_deferred()
+	_focus_later(play)
 	menu_content.modulate.a = 0.0
 	_create_tween().tween_property(menu_content, "modulate:a", 1.0, 0.28)
+
+
+## Gives a button keyboard focus once the page has finished building. If the
+## page was rebuilt again in the meantime, the old button is gone and this
+## quietly does nothing.
+func _focus_later(button: Control) -> void:
+	var focus := func():
+		if is_instance_valid(button) and button.is_inside_tree():
+			button.grab_focus()
+	focus.call_deferred()
 
 
 func _create_tween() -> Tween:
@@ -430,7 +442,7 @@ func _show_mode_select() -> void:
 	var back := _button(column, "BACK", func(): _fade_transition(_show_main, false))
 	back.custom_minimum_size = Vector2(180, 48)
 	back.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
-	tdm.grab_focus.call_deferred()
+	_focus_later(tdm)
 	menu_content.modulate.a = 0.0
 	_create_tween().tween_property(menu_content, "modulate:a", 1.0, 0.22)
 
@@ -546,7 +558,7 @@ func _build_lobby_screen(status: String) -> void:
 	fill_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	var leave := _button(footer, "LEAVE QUEUE", _leave_lobby, Color("#FFA2B4"))
 	leave.custom_minimum_size = Vector2(260, 46)
-	customize.grab_focus.call_deferred()
+	_focus_later(customize)
 	_render_team_rows()
 
 
@@ -631,6 +643,8 @@ func _empty_slot(rows: VBoxContainer, tint: Color) -> void:
 
 
 func _fill_lobby(this_queue: int) -> void:
+	var bot_rng := RandomNumberGenerator.new()
+	bot_rng.randomize()
 	var index := 0
 	while lobby_players.size() < MAX_PER_TEAM * 2:
 		await get_tree().create_timer(JOIN_DELAY).timeout
@@ -648,7 +662,9 @@ func _fill_lobby(this_queue: int) -> void:
 			"name": SIM_NAMES[index % SIM_NAMES.size()],
 			"team": team,
 			"source": "local_simulation",
-			"customization": Data.create_session_data(),
+			# Every computer player gets its own look - sometimes an outfit the
+			# player cannot pick - so the lobby and match are not full of clones.
+			"customization": Data.random_bot_customization(bot_rng, team),
 		})
 		index += 1
 		_render_team_rows()
@@ -729,7 +745,7 @@ func _show_customization(animate := true) -> void:
 	for index in CATEGORIES.size():
 		var category: String = CATEGORIES[index]
 		var allowed := Data.category_allows(customization, category)
-		var tab := _button(categories, category, func(): selected_category = category; _show_customization(false))
+		var tab := _button(categories, CATEGORY_LABELS.get(category, category), func(): _pick_category(category))
 		tab.custom_minimum_size = Vector2(0, 36)
 		tab.add_theme_font_size_override("font_size", 14)
 		# Toggle mode draws the selected category in the theme's "pressed"
@@ -745,11 +761,11 @@ func _show_customization(animate := true) -> void:
 	options.add_theme_constant_override("separation", 6)
 	options.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	body.add_child(options)
-	var category_title := _label(options, selected_category, &"DimLabel", Color("#E9B4DB"))
+	var category_title := _label(options, CATEGORY_LABELS.get(selected_category, selected_category), &"DimLabel", Color("#E9B4DB"))
 	category_title.clip_text = true
 	var allowed := Data.category_allows(customization, selected_category)
 	if not allowed:
-		var reason := "BODY COLOR IS FOR THE DEFAULT BEAN ONLY" if selected_category == "BODY COLORS" else "THIS COMPLETE SKIN DOES NOT SUPPORT THIS ACCESSORY"
+		var reason := "SUIT COLORS ARE FOR THE PLAIN CANVAS RUNNER" if selected_category == "BODY COLORS" else "THIS OUTFIT HAS ITS OWN HEADGEAR"
 		var reason_label := _label(options, reason, &"BodyLabel", Color("#A0A2B0"))
 		reason_label.add_theme_font_size_override("font_size", 13)
 		# Wrap inside the column instead of running off the panel.
@@ -777,12 +793,12 @@ func _show_customization(animate := true) -> void:
 			item_button.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 			item_button.add_theme_font_size_override("font_size", 12)
 
-	_label(column, "GUN SKIN IS A SEPARATE PAINT GUN PRESET", &"DimLabel")
+	_label(column, "YOUR LOOK AND GUN SKIN CARRY INTO MATCHES", &"DimLabel")
 	_button(column, "BACK", _return_from_customization, Color("#FF90BB"))
 	_label(column, "CURRENT SESSION ONLY", &"DimLabel", Color("#858A9E"))
 	preview.set_customization(customization)
 	if focus_tab != null:
-		focus_tab.grab_focus.call_deferred()
+		_focus_later(focus_tab)
 	# Fade in when arriving on the page, but not on every option click - that
 	# made the whole panel flash each time.
 	if animate:
@@ -790,10 +806,21 @@ func _show_customization(animate := true) -> void:
 		_create_tween().tween_property(menu_content, "modulate:a", 1.0, 0.28)
 
 
+## Switches the customize category. Opening BACK BLING turns the character
+## round so you can see the pack; leaving it turns them back.
+func _pick_category(category: String) -> void:
+	if category == "BACK BLING" and selected_category != "BACK BLING":
+		rotation_target += PI
+	elif category != "BACK BLING" and selected_category == "BACK BLING":
+		rotation_target -= PI
+	selected_category = category
+	_show_customization(false)
+
+
 func _options_for(category: String) -> Array:
 	match category:
 		"SKINS":
-			var result: Array = ["DEFAULT BEAN"]
+			var result: Array = ["CANVAS RUNNER"]
 			for skin in Data.SKINS:
 				result.append(str(skin.name))
 			return result
@@ -917,7 +944,7 @@ func _show_settings() -> void:
 	fullscreen_toggle = _button(column, _fullscreen_text(), _toggle_fullscreen)
 	_spacer(column)
 	_button(column, "BACK", _show_main)
-	fullscreen_toggle.grab_focus.call_deferred()
+	_focus_later(fullscreen_toggle)
 	menu_content.modulate.a = 0.0
 	_create_tween().tween_property(menu_content, "modulate:a", 1.0, 0.22)
 

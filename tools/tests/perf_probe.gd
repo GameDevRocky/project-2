@@ -103,6 +103,15 @@ func _apply_flags() -> void:
 		var dressing := scene.find_child("Dressing", true, false)
 		if dressing != null:
 			dressing.queue_free()
+	# Remove only some of the decoration, to find which part costs time:
+	# --remove-landmarks (outside the walls), --remove-props (inside).
+	if "--remove-landmarks" in _flags or "--remove-props" in _flags:
+		var deco := scene.find_child("Dressing", true, false)
+		if deco != null:
+			for child in deco.get_children():
+				var outside: bool = (child as Node3D).position.length() > 50.0
+				if (outside and "--remove-landmarks" in _flags) or (not outside and "--remove-props" in _flags):
+					child.queue_free()
 	if "--no-dressing" in _flags:
 		var d := scene.find_child("Dressing", true, false)
 		if d != null:

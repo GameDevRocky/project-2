@@ -211,6 +211,10 @@ var _strafe_timer: float = 0.0
 var _gravity: float = 20.0
 var tdm_team := ""
 var tdm_manager = null
+## TDM bots only: how this bot looks (outfit, suit, hat, mask, back bling, gun
+## skin), copied from its lobby record. Purely cosmetic - read by
+## scripts/visual/combatant_visual.gd, never by anything that plays the game.
+var customization: Dictionary = {}
 
 var _mesh: MeshInstance3D
 ## The generated model and its animations (scripts/visual/combatant_visual.gd).

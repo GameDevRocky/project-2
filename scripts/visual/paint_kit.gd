@@ -46,6 +46,29 @@ static func _scene(model: String) -> PackedScene:
 	return _scenes[model]
 
 
+## A copy of ONE named part (with its children) from a model that holds many
+## variants, e.g. variant("cosmetic_hats", "Hat_CROWN"). The model file is
+## loaded once (cached as a PackedScene); each call builds the model, keeps the
+## wanted part and frees the rest, so nothing is left lying around outside the
+## game. The meshes are shared, so this is cheap. Returns null if the model or
+## the part is missing.
+static func variant(model: String, part_name: String) -> Node3D:
+	var scene := _scene(model)
+	if scene == null:
+		return null
+	var whole := scene.instantiate()
+	var found := whole.find_child(part_name, true, false) as Node3D
+	if found != null:
+		found.get_parent().remove_child(found)
+		# Everything in the file "belongs" (owner) to its root; cut those links
+		# before the root is freed so nothing points at a deleted node.
+		found.owner = null
+		for child in found.find_children("*", "", true, false):
+			child.owner = null
+	whole.free()
+	return found
+
+
 ## Just the Mesh of one named part, cached. For things spawned by the dozen
 ## (paint globs, splats) this avoids building a whole scene per shot.
 static func mesh(model: String, part: String) -> Mesh:
