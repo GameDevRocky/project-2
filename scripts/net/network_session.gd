@@ -825,7 +825,8 @@ func _clear_client_lobby() -> void:
 	current_game_mode = ""
 	current_host_id = 0
 	match_active = false
-	lobby_changed.emit([])
+	var empty_roster: Array[Dictionary] = []
+	lobby_changed.emit(empty_roster)
 
 
 func _set_state(next_state: int, detail: String) -> void:
