@@ -225,7 +225,7 @@ func _physics_process(delta: float) -> void:
 			continue
 		break
 	if hit:
-		_impact(hit["position"], hit["collider"])
+		_impact(hit["position"], hit["collider"], hit["normal"])
 		return
 
 	_previous_position = global_position
@@ -234,8 +234,9 @@ func _physics_process(delta: float) -> void:
 
 ## Runs once, at the moment the glob touches something.
 ## `what` is the node the ray crossed - a wall, an enemy, or the player.
-func _impact(at: Vector3, what) -> void:
+func _impact(at: Vector3, what, surface_normal: Vector3 = Vector3.UP) -> void:
 	_spent = true
+	_spawn_impact_debris(at, surface_normal)
 
 	# Direct damage. is_in_group() checks the node was tagged with add_to_group,
 	# which is how we tell "an enemy" apart from "a wall" without caring what
@@ -256,6 +257,52 @@ func _impact(at: Vector3, what) -> void:
 		_splash(at, what)
 
 	queue_free()
+
+
+## Bursts a handful of short-lived fragments from the exact raycast contact
+## point. These are visual MeshInstance3D nodes rather than physics bodies, so
+## a rapid firefight cannot fill the physics simulation with tiny objects.
+func _spawn_impact_debris(at: Vector3, surface_normal: Vector3) -> void:
+	var debris := Node3D.new()
+	debris.name = "ImpactDebris"
+	get_parent().add_child(debris)
+	debris.global_position = at + surface_normal * 0.035
+
+	var material := StandardMaterial3D.new()
+	material.albedo_color = color.lightened(0.18)
+	material.emission_enabled = true
+	material.emission = color
+	material.emission_energy_multiplier = 1.1
+	material.disable_fog = true
+
+	for index in 6:
+		var shard := MeshInstance3D.new()
+		shard.name = "Shard%d" % index
+		var shard_mesh := BoxMesh.new()
+		shard_mesh.size = Vector3.ONE * randf_range(0.045, 0.085)
+		shard.mesh = shard_mesh
+		shard.material_override = material
+		shard.rotation = Vector3(
+			randf_range(0.0, TAU), randf_range(0.0, TAU), randf_range(0.0, TAU))
+		debris.add_child(shard)
+
+		var random_spread := Vector3(
+			randf_range(-1.0, 1.0), randf_range(0.05, 0.8), randf_range(-1.0, 1.0))
+		var burst_direction := (surface_normal * randf_range(0.7, 1.25)
+			+ random_spread * 0.55 + Vector3.UP * 0.25).normalized()
+		var end_position := burst_direction * randf_range(0.28, 0.7)
+
+		var tween := shard.create_tween()
+		tween.set_parallel(true)
+		tween.tween_property(shard, "position", end_position, 0.32).set_trans(
+			Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+		tween.tween_property(shard, "rotation", shard.rotation + Vector3(
+			randf_range(-2.0, 2.0), randf_range(-2.0, 2.0), randf_range(-2.0, 2.0)), 0.32)
+		tween.tween_property(shard, "scale", Vector3.ZERO, 0.16).set_delay(0.18)
+
+	var cleanup := debris.create_tween()
+	cleanup.tween_interval(0.38)
+	cleanup.tween_callback(debris.queue_free)
 
 
 func _splash(at: Vector3, already_hit) -> void:

@@ -7,6 +7,7 @@ extends Node
 signal connection_state_changed(state: int, detail: String)
 signal lobby_changed(roster: Array[Dictionary])
 signal lobby_joined(code: String, mode: String)
+signal lobby_list_changed(lobbies: Array[Dictionary])
 signal connection_failed(detail: String)
 signal server_left
 signal match_started(mode: String, roster: Array[Dictionary])
@@ -27,6 +28,8 @@ const MAX_LOBBY_PLAYERS := 20
 const MAX_NAME_LENGTH := 24
 const MATCH_SECONDS := 600.0
 const RESPAWN_SECONDS := 3.0
+const INTERMISSION_SECONDS := 10.0
+const TDM_KILL_LIMIT := 25
 const TEAM_RED := "RED"
 const TEAM_BLUE := "BLUE"
 const TEAM_FFA := "FFA"
@@ -37,6 +40,7 @@ var current_lobby_code := ""
 var current_game_mode := ""
 var current_host_id := 0
 var match_active := false
+var public_lobbies: Array[Dictionary] = []
 var local_player_info: Dictionary = {"name": "Player", "customization": {}}
 
 var _dedicated_server := false
@@ -72,9 +76,12 @@ func _process(_delta: float) -> void:
 	for code_value in _server_lobbies.keys():
 		var code := str(code_value)
 		var lobby: Dictionary = _server_lobbies[code]
-		if str(lobby.get("state", "")) == "match" and str(lobby.get("mode", "")) == "TEAM_DEATH_MATCH":
+		var state := str(lobby.get("state", ""))
+		if state == "match" and str(lobby.get("mode", "")) == "TEAM_DEATH_MATCH":
 			if int(lobby.get("ends_at", 0)) > 0 and now >= int(lobby.ends_at):
 				_finish_tdm(code)
+		elif state == "intermission" and now >= int(lobby.get("next_match_at", 0)):
+			_server_begin_round(code)
 
 
 func is_dedicated_server() -> bool:
@@ -110,6 +117,14 @@ func join_lobby(code: String) -> Error:
 		connection_failed.emit("Enter a lobby code.")
 		return ERR_INVALID_PARAMETER
 	_pending_action = {"type": "join", "code": clean_code}
+	return _ensure_server_connection()
+
+
+func request_lobby_list() -> Error:
+	if is_connected_to_server():
+		_request_lobby_list.rpc_id(1)
+		return OK
+	_pending_action = {"type": "list"}
 	return _ensure_server_connection()
 
 
@@ -203,6 +218,8 @@ func _run_pending_action() -> void:
 		_request_create_lobby.rpc_id(1, str(action.get("mode", "TEAM_DEATH_MATCH")), local_player_info)
 	elif str(action.get("type", "")) == "join":
 		_request_join_lobby.rpc_id(1, str(action.get("code", "")), local_player_info)
+	elif str(action.get("type", "")) == "list":
+		_request_lobby_list.rpc_id(1)
 
 
 func _on_peer_connected(_peer_id: int) -> void:
@@ -247,9 +264,11 @@ func _request_create_lobby(requested_mode: String, requested_info: Dictionary) -
 	_server_lobbies[code] = {
 		"host_id": peer_id, "mode": mode, "state": "lobby", "players": {peer_id: record},
 		"health": {}, "alive": {}, "scores": {TEAM_RED: 0, TEAM_BLUE: 0}, "stats": {}, "ends_at": 0,
+		"next_match_at": 0, "round_number": 0,
 	}
 	_peer_lobbies[peer_id] = code
 	_broadcast_lobby(code)
+	_broadcast_public_lobbies()
 
 
 @rpc("any_peer", "call_remote", "reliable")
@@ -277,6 +296,14 @@ func _request_join_lobby(requested_code: String, requested_info: Dictionary) -> 
 	_server_lobbies[code] = lobby
 	_peer_lobbies[peer_id] = code
 	_broadcast_lobby(code)
+	_broadcast_public_lobbies()
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func _request_lobby_list() -> void:
+	if not _dedicated_server:
+		return
+	_client_lobby_list.rpc_id(multiplayer.get_remote_sender_id(), _public_lobby_summaries())
 
 
 @rpc("any_peer", "call_remote", "reliable")
@@ -315,9 +342,26 @@ func _request_start_match() -> void:
 	var lobby: Dictionary = _server_lobbies[code]
 	if int(lobby.host_id) != peer_id or str(lobby.state) != "lobby":
 		return
+	if (lobby.players as Dictionary).is_empty():
+		return
+	_server_begin_round(code)
+
+
+func _server_begin_round(code: String) -> void:
+	if not _server_lobbies.has(code):
+		return
+	var lobby: Dictionary = _server_lobbies[code]
 	var lobby_players: Dictionary = lobby.players
 	if lobby_players.is_empty():
 		return
+	if str(lobby.mode) == "TEAM_DEATH_MATCH":
+		_assign_balanced_teams(lobby_players)
+	else:
+		for member_value in lobby_players.keys():
+			var member := int(member_value)
+			var record := (lobby_players[member] as Dictionary).duplicate(true)
+			record.team = TEAM_FFA
+			lobby_players[member] = record
 	var health := {}
 	var alive := {}
 	var stats := {}
@@ -332,9 +376,13 @@ func _request_start_match() -> void:
 	lobby.scores = {TEAM_RED: 0, TEAM_BLUE: 0}
 	lobby.state = "match"
 	lobby.ends_at = Time.get_ticks_msec() + int(MATCH_SECONDS * 1000.0)
+	lobby.next_match_at = 0
+	lobby.round_number = int(lobby.get("round_number", 0)) + 1
+	lobby.players = lobby_players
 	_server_lobbies[code] = lobby
 	for member_value in lobby_players.keys():
 		_client_match_started.rpc_id(int(member_value), str(lobby.mode), lobby_players.duplicate(true))
+	_broadcast_public_lobbies()
 
 
 @rpc("any_peer", "call_remote", "unreliable_ordered", 1)
@@ -417,6 +465,15 @@ func _client_lobby_snapshot(snapshot: Dictionary, code: String, mode: String, ho
 
 
 @rpc("authority", "call_remote", "reliable")
+func _client_lobby_list(snapshot: Array) -> void:
+	public_lobbies.clear()
+	for value in snapshot:
+		if value is Dictionary:
+			public_lobbies.append((value as Dictionary).duplicate(true))
+	lobby_list_changed.emit(public_lobbies.duplicate(true))
+
+
+@rpc("authority", "call_remote", "reliable")
 func _client_request_failed(detail: String) -> void:
 	connection_failed.emit(detail)
 
@@ -480,18 +537,26 @@ func _server_eliminate(code: String, victim: int, attacker: int) -> void:
 	victim_stats.deaths = int(victim_stats.deaths) + 1
 	stats[victim] = victim_stats
 	lobby.stats = stats
+	var reached_kill_limit := false
+	var scoring_team := ""
 	if str(lobby.mode) == "TEAM_DEATH_MATCH":
 		var scores: Dictionary = lobby.scores
 		var attacker_team := str(((lobby.players as Dictionary)[attacker] as Dictionary).team)
 		scores[attacker_team] = int(scores.get(attacker_team, 0)) + 1
 		lobby.scores = scores
+		scoring_team = attacker_team
+		reached_kill_limit = int(scores[attacker_team]) >= TDM_KILL_LIMIT
 	_server_lobbies[code] = lobby
 	for member_value in (lobby.players as Dictionary).keys():
 		var member := int(member_value)
 		_client_eliminated.rpc_id(member, victim, attacker)
 		_client_score_changed.rpc_id(member, (lobby.scores as Dictionary).duplicate(true), stats.duplicate(true))
 	if str(lobby.mode) == "TEAM_DEATH_MATCH":
-		_server_respawn_later(code, victim)
+		if reached_kill_limit:
+			_finish_match(code, "TEAM %s WINS" % scoring_team,
+				"First to %d eliminations." % TDM_KILL_LIMIT)
+		else:
+			_server_respawn_later(code, victim)
 	else:
 		_check_survival_winner(code)
 
@@ -550,10 +615,15 @@ func _finish_match(code: String, title: String, detail: String) -> void:
 	if not _server_lobbies.has(code):
 		return
 	var lobby: Dictionary = _server_lobbies[code]
-	lobby.state = "finished"
+	if str(lobby.get("state", "")) != "match":
+		return
+	lobby.state = "intermission"
+	lobby.ends_at = 0
+	lobby.next_match_at = Time.get_ticks_msec() + int(INTERMISSION_SECONDS * 1000.0)
 	_server_lobbies[code] = lobby
 	for member_value in (lobby.players as Dictionary).keys():
-		_client_match_finished.rpc_id(int(member_value), title, detail)
+		_client_match_finished.rpc_id(int(member_value), title,
+			"%s  Next match starts in %d seconds." % [detail, int(INTERMISSION_SECONDS)])
 
 
 func _broadcast_lobby(code: String) -> void:
@@ -562,6 +632,37 @@ func _broadcast_lobby(code: String) -> void:
 	var lobby: Dictionary = _server_lobbies[code]
 	for member_value in (lobby.players as Dictionary).keys():
 		_client_lobby_snapshot.rpc_id(int(member_value), (lobby.players as Dictionary).duplicate(true), code, str(lobby.mode), int(lobby.host_id))
+
+
+func _public_lobby_summaries() -> Array[Dictionary]:
+	var summaries: Array[Dictionary] = []
+	for code_value in _server_lobbies.keys():
+		var code := str(code_value)
+		var lobby: Dictionary = _server_lobbies[code]
+		if str(lobby.get("state", "")) != "lobby":
+			continue
+		var lobby_players: Dictionary = lobby.players
+		if lobby_players.size() >= MAX_LOBBY_PLAYERS:
+			continue
+		var host_id := int(lobby.host_id)
+		var host: Dictionary = lobby_players.get(host_id, {})
+		summaries.append({
+			"code": code,
+			"mode": str(lobby.mode),
+			"host_name": str(host.get("name", "Player")),
+			"player_count": lobby_players.size(),
+			"max_players": MAX_LOBBY_PLAYERS,
+		})
+	summaries.sort_custom(func(a: Dictionary, b: Dictionary): return str(a.code) < str(b.code))
+	return summaries
+
+
+func _broadcast_public_lobbies() -> void:
+	if not _dedicated_server:
+		return
+	var summaries := _public_lobby_summaries()
+	for peer_id in multiplayer.get_peers():
+		_client_lobby_list.rpc_id(int(peer_id), summaries)
 
 
 func _broadcast_health(code: String, peer_id: int, next_health: float) -> void:
@@ -590,6 +691,7 @@ func _server_remove_peer(peer_id: int) -> void:
 	_peer_lobbies.erase(peer_id)
 	if lobby_players.is_empty():
 		_server_lobbies.erase(code)
+		_broadcast_public_lobbies()
 		return
 	if int(lobby.host_id) == peer_id:
 		lobby.host_id = int(lobby_players.keys()[0])
@@ -599,6 +701,7 @@ func _server_remove_peer(peer_id: int) -> void:
 		_broadcast_lobby(code)
 	elif str(lobby.mode) == "SURVIVAL":
 		_check_survival_winner(code)
+	_broadcast_public_lobbies()
 
 
 func _new_lobby_code() -> String:
@@ -622,6 +725,18 @@ func _server_next_team(lobby_players: Dictionary) -> String:
 		elif str(record.get("team", "")) == TEAM_BLUE:
 			blue_count += 1
 	return TEAM_RED if red_count <= blue_count else TEAM_BLUE
+
+
+func _assign_balanced_teams(lobby_players: Dictionary) -> void:
+	var peer_ids := lobby_players.keys()
+	peer_ids.shuffle()
+	var red_starts := randi_range(0, 1) == 0
+	for index in peer_ids.size():
+		var peer_id := int(peer_ids[index])
+		var record := (lobby_players[peer_id] as Dictionary).duplicate(true)
+		var even_slot := index % 2 == 0
+		record.team = TEAM_RED if even_slot == red_starts else TEAM_BLUE
+		lobby_players[peer_id] = record
 
 
 func _make_player_record(peer_id: int, info: Dictionary, team: String) -> Dictionary:

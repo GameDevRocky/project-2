@@ -90,6 +90,14 @@ signal pair_inherited(pair: Dictionary)
 ## How far the mouse turns you. Radians of turn per pixel of mouse movement.
 @export var mouse_sensitivity: float = 0.0022
 
+## Maximum right-stick turn speed in radians per second.
+@export var controller_look_speed: float = 2.8
+
+## Camera movement applied for a brief instant when a shot leaves the weapon.
+@export var shot_shake_duration: float = 0.11
+@export var shot_shake_position: float = 0.028
+@export var shot_shake_roll: float = 0.012
+
 
 # --- Live numbers, rebuilt by _apply_pair() ---------------------------------
 var _speed: float
@@ -145,6 +153,10 @@ var _mouse_captured: bool = false
 var _camera: Camera3D
 var _view_model: Node3D
 var _muzzle: MeshInstance3D
+var _camera_home := Vector3(0.0, 1.6, 0.0)
+var _shake_remaining := 0.0
+var _spectating := false
+var _spectate_target: Node3D
 
 ## Where the view-model sits when you are perfectly still. Sway and bob are
 ## always applied as an offset from this, so the gun can never drift away from
@@ -194,6 +206,17 @@ func _set_mouse_captured(captured: bool) -> void:
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 
 
+func _process(delta: float) -> void:
+	if not _spectating or not is_instance_valid(_spectate_target):
+		return
+	var forward := -_spectate_target.global_basis.z
+	var focus := _spectate_target.global_position + Vector3.UP * 1.35 + forward * 1.8
+	var desired := _spectate_target.global_position + Vector3.UP * 2.25 - forward * 4.5
+	_camera.global_position = _camera.global_position.lerp(
+		desired, clampf(delta * 8.0, 0.0, 1.0))
+	_camera.look_at(focus, Vector3.UP)
+
+
 ## Builds the collision capsule. A capsule - a cylinder with domed ends - is the
 ## standard player shape in every 3D engine because the rounded bottom slides
 ## over small bumps and stair edges instead of catching on them the way a box
@@ -222,7 +245,7 @@ func _build_camera() -> void:
 	_camera.name = "Camera"
 	# Eye height, a little below the 1.8m total so you are looking out of a head
 	# rather than out of the top of your skull.
-	_camera.position = Vector3(0.0, 1.6, 0.0)
+	_camera.position = _camera_home
 	# The GDD asks for a wide 105 degree field of view. Wide FOV shows more of
 	# the arena at once and makes movement feel faster, at the cost of some
 	# distortion at the screen edges.
@@ -334,13 +357,29 @@ func _unhandled_input(event: InputEvent) -> void:
 
 func _physics_process(delta: float) -> void:
 	if _dead:
+		_animate_screen_shake(delta)
 		return
 
 	_tick_timers(delta)
+	_look_with_controller(delta)
 	_move(delta)
 	_shoot(delta)
 	_regenerate(delta)
 	_animate_view_model(delta)
+	_animate_screen_shake(delta)
+
+
+func _look_with_controller(delta: float) -> void:
+	var look := Input.get_vector("look_left", "look_right", "look_up", "look_down", 0.2)
+	if look.is_zero_approx():
+		return
+	rotate_y(-look.x * controller_look_speed * delta)
+	_camera.rotation.x = clampf(
+		_camera.rotation.x - look.y * controller_look_speed * delta,
+		deg_to_rad(-89.0), deg_to_rad(89.0))
+	# Feed a smaller version into the existing weapon sway so stick aiming has
+	# the same sense of weight as mouse aiming.
+	_sway += look * 18.0 * delta
 
 
 func _tick_timers(delta: float) -> void:
@@ -448,6 +487,7 @@ func _shoot(_delta: float) -> void:
 		})
 
 	_kick_view_model()
+	_start_screen_shake()
 	stats_changed.emit()
 
 
@@ -541,6 +581,28 @@ func _kick_view_model() -> void:
 	_view_model.position.y -= 0.012
 
 
+func _start_screen_shake() -> void:
+	_shake_remaining = shot_shake_duration
+
+
+func _animate_screen_shake(delta: float) -> void:
+	if _spectating:
+		return
+	if _shake_remaining > 0.0:
+		_shake_remaining = maxf(_shake_remaining - delta, 0.0)
+		var weight := _shake_remaining / maxf(shot_shake_duration, 0.001)
+		_camera.position = _camera_home + Vector3(
+			randf_range(-shot_shake_position, shot_shake_position) * weight,
+			randf_range(-shot_shake_position, shot_shake_position) * weight,
+			0.0)
+		_camera.rotation.z = randf_range(-shot_shake_roll, shot_shake_roll) * weight
+	else:
+		_camera.position = _camera.position.lerp(
+			_camera_home, clampf(delta * 24.0, 0.0, 1.0))
+		_camera.rotation.z = lerp_angle(
+			_camera.rotation.z, 0.0, clampf(delta * 24.0, 0.0, 1.0))
+
+
 # ============================================================================
 # INHERITANCE
 # ============================================================================
@@ -627,12 +689,39 @@ func take_damage(amount: float, attacker = null) -> void:
 
 
 func tdm_respawn(at: Vector3) -> void:
+	stop_spectating()
 	_dead = false
 	health = max_health
 	global_position = at
 	velocity = Vector3.ZERO
 	stats_changed.emit()
 	_set_mouse_captured(true)
+
+
+func start_spectating(target: Node3D) -> void:
+	if not is_instance_valid(target):
+		return
+	_spectating = true
+	_spectate_target = target
+	_shake_remaining = 0.0
+	velocity = Vector3.ZERO
+	collision_layer = 0
+	collision_mask = 0
+	_view_model.visible = false
+	_camera.top_level = true
+	_camera.current = true
+	_set_mouse_captured(false)
+
+
+func stop_spectating() -> void:
+	_spectating = false
+	_spectate_target = null
+	_camera.top_level = false
+	_camera.position = _camera_home
+	_camera.rotation = Vector3.ZERO
+	_view_model.visible = true
+	collision_layer = 2
+	collision_mask = 1 | 4
 
 
 func apply_network_health(next_health: float) -> void:

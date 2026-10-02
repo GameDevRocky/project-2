@@ -42,3 +42,17 @@ One line per note. Read this file at the start of every session.
   need a visible rifle whose yaw and pitch follow their synchronized aim.
 - [projectile-visual-direction.md](projectile-visual-direction.md) — player shots
   are small 90 m/s tracers and leave no decorative impact splat.
+- [expanded-open-air-arena.md](expanded-open-air-arena.md) - the multiplayer
+  arena is 135 metres square, open to the sky, and has more outer-route cover.
+- [controller-layout.md](controller-layout.md) - gameplay uses the left stick,
+  right stick, right trigger, and south face button.
+- [shot-impact-feedback.md](shot-impact-feedback.md) - shots create impact
+  debris and briefly shake the local camera.
+- [public-lobby-browser.md](public-lobby-browser.md) - online setup lists
+  joinable lobbies for the selected mode and filters them by room code.
+- [tdm-round-format.md](tdm-round-format.md) - TDM uses balanced random teams,
+  a 25-kill target, and a 10-second intermission before the next round.
+- [killer-spectate-chain.md](killer-spectate-chain.md) - dead players spectate
+  their killer and follow that killer's elimination chain.
+- [team-leaderboards.md](team-leaderboards.md) - the TDM HUD shows per-team
+  player rankings sorted by kills.

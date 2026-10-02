@@ -450,3 +450,9 @@ func show_ending(title: String, body: String, title_color: Color) -> void:
 	_end_body.text = body
 	_prompt.visible = false
 	_crosshair.visible = false
+
+
+func set_spectating(active: bool) -> void:
+	_crosshair.visible = not active
+	if active:
+		_prompt.visible = false

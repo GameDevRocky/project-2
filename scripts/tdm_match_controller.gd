@@ -8,8 +8,22 @@ const Projectile = preload("res://scripts/projectile.gd")
 const RemotePlayer = preload("res://scripts/net/remote_player.gd")
 const HudScript = preload("res://scripts/hud.gd")
 const MATCH_SECONDS := 600.0
+const INTERMISSION_SECONDS := 10.0
+const TDM_KILL_LIMIT := 25
 const RED := Color("#FF627E")
 const BLUE := Color("#58D7F2")
+const SURVIVAL_SPAWNS := [
+	Vector3(-58.0, 1.2, -58.0), Vector3(58.0, 1.2, 58.0),
+	Vector3(58.0, 1.2, -58.0), Vector3(-58.0, 1.2, 58.0),
+	Vector3(0.0, 1.2, -62.0), Vector3(0.0, 1.2, 62.0),
+	Vector3(62.0, 1.2, 0.0), Vector3(-62.0, 1.2, 0.0),
+	Vector3(58.0, 1.2, -12.0), Vector3(-58.0, 1.2, 12.0),
+	Vector3(-58.0, 1.2, -12.0), Vector3(58.0, 1.2, 12.0),
+	Vector3(38.0, 1.2, -58.0), Vector3(-38.0, 1.2, 58.0),
+	Vector3(-38.0, 1.2, -58.0), Vector3(38.0, 1.2, 58.0),
+	Vector3(58.0, 1.2, -48.0), Vector3(-58.0, 1.2, 48.0),
+	Vector3(-58.0, 1.2, -48.0), Vector3(58.0, 1.2, 48.0),
+]
 
 var game
 var local_player
@@ -25,7 +39,13 @@ var hud
 var mode_label: Label
 var score_label: Label
 var timer_label: Label
+var red_leaderboard: Label
+var blue_leaderboard: Label
+var spectate_label: Label
 var _send_accumulator := 0.0
+var _rematch_remaining := 0.0
+var _killer_of: Dictionary = {}
+var _spectated_peer_id := 0
 
 
 func start_match(owner_game, local_actor, lobby_records: Array[Dictionary], _team: String) -> void:
@@ -60,12 +80,16 @@ func start_match(owner_game, local_actor, lobby_records: Array[Dictionary], _tea
 	NetworkSession.player_respawned.connect(_on_player_respawned)
 	NetworkSession.score_changed.connect(_on_score_changed)
 	NetworkSession.match_finished.connect(_on_match_finished)
+	NetworkSession.match_started.connect(_on_next_round_started)
 	NetworkSession.server_left.connect(_on_server_left)
 	_build_hud()
 
 
 func _process(delta: float) -> void:
 	if ended:
+		_rematch_remaining = maxf(_rematch_remaining - delta, 0.0)
+		timer_label.text = str(int(ceil(_rematch_remaining)))
+		mode_label.text = "NEXT MATCH"
 		if Input.is_action_just_pressed("restart"):
 			NetworkSession.disconnect_game()
 			get_tree().change_scene_to_file("res://scenes/main.tscn")
@@ -118,9 +142,15 @@ func _on_health_changed(peer_id: int, next_health: float) -> void:
 
 func _on_player_eliminated(victim_peer_id: int, attacker_peer_id: int) -> void:
 	alive[victim_peer_id] = false
+	_killer_of[victim_peer_id] = attacker_peer_id
 	var victim = actors.get(victim_peer_id)
-	if victim_peer_id != NetworkSession.local_peer_id() and is_instance_valid(victim):
+	var local_id := NetworkSession.local_peer_id()
+	if victim_peer_id != local_id and is_instance_valid(victim):
 		victim.eliminate()
+	if victim_peer_id == local_id:
+		_begin_spectating(attacker_peer_id)
+	elif _spectated_peer_id == victim_peer_id:
+		_begin_spectating(attacker_peer_id)
 	var attacker_name := str(_record_for(attacker_peer_id).get("name", "Player"))
 	var victim_name := str(_record_for(victim_peer_id).get("name", "Player"))
 	hud.announce("%s ELIMINATED" % victim_name.to_upper(), "by %s" % attacker_name)
@@ -134,6 +164,9 @@ func _on_player_respawned(peer_id: int) -> void:
 	var at := _spawn_for(_record_for(peer_id))
 	if peer_id == NetworkSession.local_peer_id():
 		local_player.tdm_respawn(at)
+		_spectated_peer_id = 0
+		spectate_label.text = ""
+		hud.set_spectating(false)
 	else:
 		actor.respawn(at)
 	alive[peer_id] = true
@@ -148,9 +181,15 @@ func _on_score_changed(next_scores: Dictionary, next_stats: Dictionary) -> void:
 
 func _on_match_finished(title: String, detail: String) -> void:
 	ended = true
+	_rematch_remaining = INTERMISSION_SECONDS
 	local_player.set_physics_process(false)
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	hud.show_ending(title, detail + "\n\nPress R to return to the main menu.", Color.WHITE)
+
+
+func _on_next_round_started(_mode: String, _roster: Array[Dictionary]) -> void:
+	if ended:
+		get_tree().change_scene_to_file("res://scenes/match.tscn")
 
 
 func _on_server_left() -> void:
@@ -169,6 +208,16 @@ func _build_hud() -> void:
 	score_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	timer_label = _label("" if game_mode == "SURVIVAL" else "10:00", Vector2(565, 18), Vector2(150, 34), 22)
 	timer_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	red_leaderboard = _label("", Vector2(30, 62), Vector2(330, 230), 14)
+	blue_leaderboard = _label("", Vector2(920, 62), Vector2(330, 230), 14)
+	red_leaderboard.add_theme_color_override("font_color", RED)
+	blue_leaderboard.add_theme_color_override("font_color", BLUE)
+	blue_leaderboard.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	spectate_label = _label("", Vector2(390, 650), Vector2(500, 34), 18)
+	spectate_label.add_theme_color_override("font_color", Color("#FFE28D"))
+	spectate_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	red_leaderboard.visible = game_mode == "TEAM_DEATH_MATCH"
+	blue_leaderboard.visible = game_mode == "TEAM_DEATH_MATCH"
 	_refresh_score_label()
 
 
@@ -190,13 +239,60 @@ func _refresh_score_label() -> void:
 	if not is_instance_valid(score_label):
 		return
 	if game_mode == "TEAM_DEATH_MATCH":
-		score_label.text = "RED %d    BLUE %d" % [int(scores.get("RED", 0)), int(scores.get("BLUE", 0))]
+		score_label.text = "RED %d/%d    BLUE %d/%d" % [int(scores.get("RED", 0)), TDM_KILL_LIMIT, int(scores.get("BLUE", 0)), TDM_KILL_LIMIT]
+		mode_label.text = "TEAM DEATHMATCH  •  FIRST TO %d" % TDM_KILL_LIMIT
+		red_leaderboard.text = _leaderboard_text("RED")
+		blue_leaderboard.text = _leaderboard_text("BLUE")
 	else:
 		var alive_count := 0
 		for value in alive.values():
 			if bool(value):
 				alive_count += 1
 		score_label.text = "%d ALIVE" % alive_count
+
+
+func _leaderboard_text(team: String) -> String:
+	var members: Array[Dictionary] = []
+	for record in players:
+		if str(record.get("team", "")) == team:
+			members.append(record)
+	members.sort_custom(func(a: Dictionary, b: Dictionary):
+		var a_stats: Dictionary = stats.get(int(a.get("peer_id", 0)), {})
+		var b_stats: Dictionary = stats.get(int(b.get("peer_id", 0)), {})
+		var a_kills := int(a_stats.get("kills", 0))
+		var b_kills := int(b_stats.get("kills", 0))
+		if a_kills == b_kills:
+			return str(a.get("name", "")) < str(b.get("name", ""))
+		return a_kills > b_kills)
+	var lines: Array[String] = ["%s LEADERBOARD" % team]
+	for record in members:
+		var record_stats: Dictionary = stats.get(int(record.get("peer_id", 0)), {})
+		lines.append("%s   %d K / %d D" % [str(record.get("name", "Player")),
+			int(record_stats.get("kills", 0)), int(record_stats.get("deaths", 0))])
+	return "\n".join(lines)
+
+
+func _begin_spectating(requested_peer_id: int) -> void:
+	var target_id := _resolve_spectate_target(requested_peer_id)
+	var target = actors.get(target_id)
+	if target_id == 0 or target_id == NetworkSession.local_peer_id() or not is_instance_valid(target):
+		return
+	_spectated_peer_id = target_id
+	local_player.start_spectating(target)
+	var target_name := str(_record_for(target_id).get("name", "Player"))
+	spectate_label.text = "SPECTATING  %s" % target_name.to_upper()
+	hud.set_spectating(true)
+
+
+func _resolve_spectate_target(requested_peer_id: int) -> int:
+	var candidate := requested_peer_id
+	var visited := {}
+	while candidate != 0 and not bool(alive.get(candidate, false)):
+		if visited.has(candidate) or not _killer_of.has(candidate):
+			return 0
+		visited[candidate] = true
+		candidate = int(_killer_of[candidate])
+	return candidate
 
 
 func _record_for(peer_id: int) -> Dictionary:
@@ -220,8 +316,7 @@ func _spawn_for(record: Dictionary) -> Vector3:
 			break
 		index += 1
 	if game_mode == "SURVIVAL":
-		var angle := TAU * float(index) / float(maxi(players.size(), 1))
-		return Vector3(cos(angle) * 28.0, 1.2, sin(angle) * 28.0)
+		return SURVIVAL_SPAWNS[index % SURVIVAL_SPAWNS.size()]
 	var team := str(record.get("team", "RED"))
 	var team_index := 0
 	for entry in players:
@@ -229,8 +324,9 @@ func _spawn_for(record: Dictionary) -> Vector3:
 			if int(entry.get("peer_id", 0)) == peer_id:
 				break
 			team_index += 1
-	var x := -34.0 if team == "RED" else 34.0
-	return Vector3(x, 1.2, float((team_index % 5) - 2) * 3.0)
+	var row := team_index / 5
+	var x := (-55.0 + row * 4.0) if team == "RED" else (55.0 - row * 4.0)
+	return Vector3(x, 1.2, float((team_index % 5) - 2) * 4.0)
 
 
 func _format_time(seconds: float) -> String:

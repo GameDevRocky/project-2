@@ -46,6 +46,8 @@ var red_rows: VBoxContainer
 var blue_rows: VBoxContainer
 var fill_label: Label
 var join_code_edit: LineEdit
+var lobby_dropdown: OptionButton
+var lobby_refresh_accumulator := 0.0
 var inspection_hide_nodes: Array[Node3D] = []
 
 
@@ -56,6 +58,7 @@ func _ready() -> void:
 	NetworkSession.connection_failed.connect(_on_network_failed)
 	NetworkSession.lobby_joined.connect(_on_lobby_joined)
 	NetworkSession.lobby_changed.connect(_on_online_lobby_changed)
+	NetworkSession.lobby_list_changed.connect(_on_lobby_list_changed)
 	NetworkSession.match_started.connect(_on_online_match_started)
 	NetworkSession.server_left.connect(_on_server_left)
 	randomize()
@@ -405,23 +408,35 @@ func _select_tdm() -> void:
 func _show_online_setup() -> void:
 	current_screen = "online_setup"
 	_clear_screen()
-	var card := _panel(menu_content, Vector2(330, 112), Vector2(620, 480), Color("#65E2D2"), 1)
+	var card := _panel(menu_content, Vector2(300, 66), Vector2(680, 610), Color("#65E2D2"), 1)
 	var content := Control.new()
 	card.add_child(content)
 	var mode_title := "SURVIVAL" if selected_game_mode == "SURVIVAL" else "TEAM DEATHMATCH"
-	_label(content, mode_title + "  /  ONLINE", Vector2(24, 22), Vector2(560, 48), 30)
-	status_label = _label(content, "Create a lobby or enter a friend's code.", Vector2(26, 74), Vector2(560, 28), 15, Color("#B4EEE7"))
-	_button(content, "CREATE LOBBY", Vector2(38, 128), Vector2(544, 62), _create_online_lobby, false, Color("#FF718A"))
-	_label(content, "JOIN WITH LOBBY CODE", Vector2(40, 218), Vector2(300, 24), 13, Color("#DDE7F3"))
+	_label(content, mode_title + "  /  ONLINE", Vector2(24, 16), Vector2(620, 48), 30)
+	status_label = _label(content, "Create a lobby or choose an available room.", Vector2(26, 66), Vector2(620, 28), 15, Color("#B4EEE7"))
+	_button(content, "CREATE LOBBY", Vector2(38, 108), Vector2(604, 56), _create_online_lobby, false, Color("#FF718A"))
+	_label(content, "AVAILABLE LOBBIES", Vector2(40, 187), Vector2(300, 24), 13, Color("#DDE7F3"))
+	lobby_dropdown = OptionButton.new()
+	lobby_dropdown.position = Vector2(38, 215)
+	lobby_dropdown.size = Vector2(604, 50)
+	lobby_dropdown.add_theme_font_size_override("font_size", 16)
+	lobby_dropdown.item_selected.connect(_on_lobby_selected)
+	content.add_child(lobby_dropdown)
+	_label(content, "FILTER OR ENTER ROOM CODE", Vector2(40, 292), Vector2(330, 24), 13, Color("#DDE7F3"))
 	join_code_edit = LineEdit.new()
 	join_code_edit.placeholder_text = "ABCDE"
 	join_code_edit.max_length = 6
-	join_code_edit.position = Vector2(38, 250)
-	join_code_edit.size = Vector2(330, 54)
+	join_code_edit.position = Vector2(38, 320)
+	join_code_edit.size = Vector2(380, 52)
 	join_code_edit.add_theme_font_size_override("font_size", 22)
+	join_code_edit.text_changed.connect(func(_value): _render_lobby_dropdown())
 	content.add_child(join_code_edit)
-	_button(content, "JOIN", Vector2(382, 250), Vector2(200, 54), _join_online_lobby)
-	_button(content, "BACK", Vector2(38, 365), Vector2(180, 48), func(): _fade_transition(_show_mode_select, false))
+	_button(content, "JOIN", Vector2(432, 320), Vector2(210, 52), _join_online_lobby)
+	_button(content, "REFRESH", Vector2(38, 404), Vector2(210, 48), _refresh_lobby_list)
+	_button(content, "BACK", Vector2(432, 404), Vector2(210, 48), func(): _fade_transition(_show_mode_select, false))
+	_render_lobby_dropdown()
+	lobby_refresh_accumulator = 0.0
+	_refresh_lobby_list()
 
 
 func _create_online_lobby() -> void:
@@ -431,9 +446,59 @@ func _create_online_lobby() -> void:
 
 
 func _join_online_lobby() -> void:
+	var code := join_code_edit.text.strip_edges().to_upper()
+	if code.is_empty() and is_instance_valid(lobby_dropdown) and lobby_dropdown.selected >= 0:
+		code = str(lobby_dropdown.get_item_metadata(lobby_dropdown.selected))
 	NetworkSession.configure_local_player(_username(), customization)
 	status_label.text = "CONNECTING TO LOBBY..."
-	NetworkSession.join_lobby(join_code_edit.text)
+	NetworkSession.join_lobby(code)
+
+
+func _refresh_lobby_list() -> void:
+	if current_screen == "online_setup":
+		NetworkSession.request_lobby_list()
+
+
+func _on_lobby_list_changed(_lobbies: Array[Dictionary]) -> void:
+	if current_screen == "online_setup":
+		_render_lobby_dropdown()
+
+
+func _render_lobby_dropdown() -> void:
+	if not is_instance_valid(lobby_dropdown):
+		return
+	lobby_dropdown.clear()
+	var filter_code := ""
+	if is_instance_valid(join_code_edit):
+		filter_code = join_code_edit.text.strip_edges().to_upper()
+	for lobby in NetworkSession.public_lobbies:
+		var code := str(lobby.get("code", ""))
+		if str(lobby.get("mode", "")) != selected_game_mode:
+			continue
+		if not filter_code.is_empty() and not code.contains(filter_code):
+			continue
+		var row := "%s  •  %d/%d PLAYERS  •  CODE %s" % [
+			str(lobby.get("host_name", "Player")),
+			int(lobby.get("player_count", 0)),
+			int(lobby.get("max_players", 20)), code]
+		lobby_dropdown.add_item(row)
+		lobby_dropdown.set_item_metadata(lobby_dropdown.item_count - 1, code)
+	if lobby_dropdown.item_count == 0:
+		lobby_dropdown.add_item("NO JOINABLE LOBBIES FOUND")
+		lobby_dropdown.set_item_metadata(0, "")
+		lobby_dropdown.disabled = true
+	else:
+		lobby_dropdown.disabled = false
+		lobby_dropdown.select(0)
+
+
+func _on_lobby_selected(index: int) -> void:
+	if not is_instance_valid(join_code_edit):
+		return
+	var code := str(lobby_dropdown.get_item_metadata(index))
+	if not code.is_empty():
+		join_code_edit.text = code
+		join_code_edit.caret_column = code.length()
 
 
 func _on_network_state_changed(_state: int, detail: String) -> void:
@@ -873,6 +938,11 @@ func _unhandled_input(event: InputEvent) -> void:
 func _process(delta: float) -> void:
 	if not is_instance_valid(preview_mount):
 		return
+	if current_screen == "online_setup":
+		lobby_refresh_accumulator += delta
+		if lobby_refresh_accumulator >= 2.0:
+			lobby_refresh_accumulator = 0.0
+			_refresh_lobby_list()
 	if current_screen == "customize":
 		if Input.is_action_just_pressed("ui_left"):
 			rotation_target -= 0.65

@@ -15,7 +15,7 @@ extends Node3D
 ## list is worth more than being able to drag it.
 ##
 ## THE LAYOUT AND WHY IT IS SHAPED THIS WAY
-## The expanded arena is 90m square and divided into a central combat hub,
+## The expanded arena is 135m square and divided into a central combat hub,
 ## perimeter buildings, and a recessed southern lane. Three enterable buildings
 ## offer close-range routes and cover; the southwest building has a raised,
 ## reachable firing floor. Open lanes connect these areas, while offset cover
@@ -25,8 +25,8 @@ extends Node3D
 ## "unfair" - dying should teach you the room, and a room reshuffled every run
 ## teaches you nothing.
 
-## Half the width of the playable floor, in metres. The arena is 90m square.
-const ARENA_HALF := 45.0
+## Half the width of the playable floor, in metres. The arena is 135m square.
+const ARENA_HALF := 67.5
 
 ## How tall the boundary walls are. High enough that the Bounder pair's boosted
 ## jump cannot clear them and escape the level.
@@ -85,6 +85,30 @@ const COVER := [
 	{"pos": Vector3(19.0, 0.0, 11.0), "size": Vector3(5.0, 1.4, 2.0), "color": "teal"},
 	{"pos": Vector3(18.0, 0.0, -12.0), "size": Vector3(2.0, 1.4, 5.0), "color": "pink"},
 	{"pos": Vector3(-18.0, 0.0, 12.0), "size": Vector3(2.0, 1.4, 5.0), "color": "mint"},
+	# Outer combat lanes added with the larger footprint. Alternating low and
+	# tall cover keeps these new spaces from becoming long empty sightlines.
+	{"pos": Vector3(-46.0, 0.0, -12.0), "size": Vector3(8.0, 2.0, 2.0), "color": "teal"},
+	{"pos": Vector3(46.0, 0.0, 12.0), "size": Vector3(8.0, 2.0, 2.0), "color": "pink"},
+	{"pos": Vector3(-39.0, 0.0, 20.0), "size": Vector3(2.0, 3.0, 8.0), "color": "mint"},
+	{"pos": Vector3(39.0, 0.0, -20.0), "size": Vector3(2.0, 3.0, 8.0), "color": "teal"},
+	{"pos": Vector3(-52.0, 0.0, -42.0), "size": Vector3(5.0, 2.4, 3.0), "color": "pink"},
+	{"pos": Vector3(52.0, 0.0, 42.0), "size": Vector3(5.0, 2.4, 3.0), "color": "mint"},
+	{"pos": Vector3(-18.0, 0.0, -52.0), "size": Vector3(8.0, 1.7, 2.0), "color": "pale"},
+	{"pos": Vector3(18.0, 0.0, 52.0), "size": Vector3(8.0, 1.7, 2.0), "color": "charcoal"},
+	{"pos": Vector3(-48.0, 0.0, 6.0), "size": Vector3(3.0, 1.6, 6.0), "color": "pale"},
+	{"pos": Vector3(48.0, 0.0, -6.0), "size": Vector3(3.0, 1.6, 6.0), "color": "mint"},
+	{"pos": Vector3(-8.0, 0.0, 47.0), "size": Vector3(2.0, 3.2, 6.0), "color": "teal"},
+	{"pos": Vector3(8.0, 0.0, -47.0), "size": Vector3(2.0, 3.2, 6.0), "color": "pink"},
+	{"pos": Vector3(-56.0, 0.0, -24.0), "size": Vector3(2.0, 2.7, 8.0), "color": "charcoal"},
+	{"pos": Vector3(56.0, 0.0, 24.0), "size": Vector3(2.0, 2.7, 8.0), "color": "pale"},
+	{"pos": Vector3(-34.0, 0.0, -54.0), "size": Vector3(6.0, 1.8, 2.0), "color": "mint"},
+	{"pos": Vector3(34.0, 0.0, 54.0), "size": Vector3(6.0, 1.8, 2.0), "color": "teal"},
+	{"pos": Vector3(-54.0, 0.0, 30.0), "size": Vector3(7.0, 2.0, 2.0), "color": "pink"},
+	{"pos": Vector3(54.0, 0.0, -30.0), "size": Vector3(7.0, 2.0, 2.0), "color": "mint"},
+	{"pos": Vector3(-32.0, 0.0, 45.0), "size": Vector3(2.0, 2.5, 7.0), "color": "pale"},
+	{"pos": Vector3(32.0, 0.0, -45.0), "size": Vector3(2.0, 2.5, 7.0), "color": "charcoal"},
+	{"pos": Vector3(-4.0, 0.0, -58.0), "size": Vector3(7.0, 1.5, 2.0), "color": "teal"},
+	{"pos": Vector3(4.0, 0.0, 58.0), "size": Vector3(7.0, 1.5, 2.0), "color": "pink"},
 	# The raised center is useful high ground but exposed from every approach.
 	{"pos": Vector3(0.0, 0.0, 0.0), "size": Vector3(8.0, 0.8, 8.0), "color": "pale"},
 ]
@@ -215,7 +239,7 @@ func _build_light() -> void:
 	sun.shadow_normal_bias = 1.4
 	# Four shadow splits keeps shadows sharp near the player and cheap far away.
 	sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_4_SPLITS
-	sun.directional_shadow_max_distance = 80.0
+	sun.directional_shadow_max_distance = 120.0
 
 	add_child(sun)
 
@@ -253,13 +277,6 @@ func _build_walls() -> void:
 		Vector3(WALL_THICKNESS, WALL_HEIGHT, span), wall_color, 0.9)
 	_add_solid(Vector3(offset, WALL_HEIGHT * 0.5, 0.0),
 		Vector3(WALL_THICKNESS, WALL_HEIGHT, span), wall_color, 0.9)
-
-	# A ceiling, invisible but solid. Nothing should ever reach it, but the
-	# Bounder pair's boosted jump off the centre platform gets closer than you
-	# would think, and a player who clips over a wall is a run ended by a bug.
-	_add_solid(Vector3(0.0, WALL_HEIGHT + 0.5, 0.0),
-		Vector3(span, 1.0, span), wall_color, 0.9, false)
-
 
 func _build_cover() -> void:
 	for piece in COVER:
@@ -314,6 +331,13 @@ func _build_buildings() -> void:
 		true, Vector3(21.8, 0.0, 0.0))
 	_add_solid(Vector3(-34.5, 3.75, 25.0), Vector3(0.35, 0.8, 5.0), COVER_SAGE, 0.85)
 	_add_solid(Vector3(-27.0, 3.75, 20.2), Vector3(13.0, 0.8, 0.35), COVER_SAGE, 0.85)
+
+	# Southeast building fills the largest area added by the 1.5x expansion.
+	# Three entrances make it useful cover without creating a dead-end camp.
+	_build_room_shell(Vector3(45.0, 0.0, 44.0), 18.0, 16.0, 4.4,
+		COVER_TEAL, [&"north", &"west", &"south"])
+	_build_partition(Vector3(45.0, 0.0, 45.5), 13.0, 3.6, 0.55, COVER_PALE)
+	_add_solid(Vector3(49.5, 1.0, 40.0), Vector3(4.0, 2.0, 1.4), COVER_ROSE, 0.88)
 
 
 func _build_room_shell(center: Vector3, width: float, depth: float, height: float,
