@@ -67,6 +67,12 @@ const COVER_ROSE := Color("#C4899B")
 const COVER_SAGE := Color("#84B895")
 const COVER_TEAL := Color("#3F8886")
 const COVER_PALE := Color("#CBC2D6")
+const TEAM_RED := Color("#FF5477")
+const TEAM_BLUE := Color("#4CC9FF")
+const ARENA_GLOW := Color("#8BFFB4")
+
+var _accent_time: float = 0.0
+var _pulse_materials: Array[StandardMaterial3D] = []
 
 
 ## The cover pieces, as a plain list. Each entry is where it sits, how big it
@@ -122,6 +128,16 @@ func _ready() -> void:
 	_build_cover()
 	_build_sunken_route()
 	_build_buildings()
+	_build_visual_accents()
+
+
+func _process(delta: float) -> void:
+	# Small emission changes keep the environment alive without moving cover or
+	# changing collision. The offset stops every colour from pulsing in unison.
+	_accent_time += delta
+	for index in _pulse_materials.size():
+		var material := _pulse_materials[index]
+		material.emission_energy_multiplier = 1.15 + sin(_accent_time * 1.8 + float(index) * 1.7) * 0.3
 
 
 ## The sky and the global lighting settings. A WorldEnvironment node holds an
@@ -338,6 +354,101 @@ func _build_buildings() -> void:
 		COVER_TEAL, [&"north", &"west", &"south"])
 	_build_partition(Vector3(45.0, 0.0, 45.5), 13.0, 3.6, 0.55, COVER_PALE)
 	_add_solid(Vector3(49.5, 1.0, 40.0), Vector3(4.0, 2.0, 1.4), COVER_ROSE, 0.88)
+
+
+## Non-colliding arena dressing. These meshes make routes and team sides easy
+## to read at a glance while leaving every existing movement lane untouched.
+func _build_visual_accents() -> void:
+	var red_glow := _glow_material(TEAM_RED)
+	var blue_glow := _glow_material(TEAM_BLUE)
+	var green_glow := _glow_material(ARENA_GLOW)
+	var pale_glow := _glow_material(Color("#FFF2BE"))
+
+	_build_spawn_marker(Vector3(-55.0, 0.04, 0.0), TEAM_RED, red_glow, "RED SPAWN")
+	_build_spawn_marker(Vector3(55.0, 0.04, 0.0), TEAM_BLUE, blue_glow, "BLUE SPAWN")
+
+	# Short lane dashes point toward the central fight without turning the floor
+	# into one bright uninterrupted stripe.
+	for x in [-44.0, -36.0, -28.0, -20.0]:
+		_add_visual_box(Vector3(x, 0.025, 0.0), Vector3(4.2, 0.045, 0.16), red_glow)
+	for x in [20.0, 28.0, 36.0, 44.0]:
+		_add_visual_box(Vector3(x, 0.025, 0.0), Vector3(4.2, 0.045, 0.16), blue_glow)
+
+	# A luminous rim gives the raised middle platform a strong focal point.
+	_add_floor_ring(Vector3(0.0, 0.43, 0.0), 5.75, pale_glow)
+	for corner in [Vector3(-3.55, 0.44, -3.55), Vector3(3.55, 0.44, -3.55),
+			Vector3(-3.55, 0.44, 3.55), Vector3(3.55, 0.44, 3.55)]:
+		_add_visual_box(corner, Vector3(0.38, 0.08, 0.38), pale_glow)
+
+	# Green lintels identify the two buildings containing healing stations from
+	# across the map. They share the station colour for fast visual navigation.
+	_add_visual_box(Vector3(-28.0, 3.35, -22.95), Vector3(3.25, 0.16, 0.12), green_glow)
+	_add_visual_box(Vector3(28.0, 3.75, -19.95), Vector3(3.25, 0.16, 0.12), green_glow)
+	_add_visual_box(Vector3(36.45, 3.75, -27.0), Vector3(0.12, 0.16, 3.25), green_glow)
+
+	# Wall lights break up the large outer boundary and give players landmarks
+	# when turning quickly. They sit high enough to never resemble cover.
+	for x in [-45.0, -15.0, 15.0, 45.0]:
+		_add_visual_box(Vector3(x, 5.4, -67.48), Vector3(5.0, 0.18, 0.08), blue_glow)
+		_add_visual_box(Vector3(x, 5.4, 67.48), Vector3(5.0, 0.18, 0.08), red_glow)
+	for z in [-45.0, -15.0, 15.0, 45.0]:
+		_add_visual_box(Vector3(-67.48, 5.4, z), Vector3(0.08, 0.18, 5.0), red_glow)
+		_add_visual_box(Vector3(67.48, 5.4, z), Vector3(0.08, 0.18, 5.0), blue_glow)
+
+	# The recessed route gets its own guide lights so the lower floor does not
+	# disappear into shade when viewed from the plaza.
+	for z in [22.5, 27.5, 32.5, 37.0]:
+		_add_visual_box(Vector3(-7.48, -1.0, z), Vector3(0.08, 0.12, 2.1), green_glow)
+		_add_visual_box(Vector3(7.48, -1.0, z), Vector3(0.08, 0.12, 2.1), green_glow)
+
+
+func _build_spawn_marker(at: Vector3, color: Color,
+		material: StandardMaterial3D, label_text: String) -> void:
+	_add_floor_ring(at, 3.2, material)
+	_add_visual_box(at + Vector3(0.0, 0.01, 0.0), Vector3(4.4, 0.04, 0.12), material)
+	_add_visual_box(at + Vector3(0.0, 0.01, 0.0), Vector3(0.12, 0.04, 4.4), material)
+	var label := Label3D.new()
+	label.text = label_text
+	label.position = at + Vector3(0.0, 0.035, 1.25)
+	label.rotation_degrees.x = -90.0
+	label.font_size = 48
+	label.pixel_size = 0.012
+	label.modulate = color
+	label.outline_size = 8
+	label.outline_modulate = Color("#252038")
+	add_child(label)
+
+
+func _add_floor_ring(at: Vector3, radius: float, material: Material) -> void:
+	var ring_mesh := TorusMesh.new()
+	ring_mesh.inner_radius = radius - 0.12
+	ring_mesh.outer_radius = radius
+	var ring := MeshInstance3D.new()
+	ring.mesh = ring_mesh
+	ring.position = at
+	ring.material_override = material
+	add_child(ring)
+
+
+func _add_visual_box(at: Vector3, size: Vector3, material: Material) -> void:
+	var mesh_node := MeshInstance3D.new()
+	var box := BoxMesh.new()
+	box.size = size
+	mesh_node.mesh = box
+	mesh_node.position = at
+	mesh_node.material_override = material
+	add_child(mesh_node)
+
+
+func _glow_material(color: Color) -> StandardMaterial3D:
+	var material := StandardMaterial3D.new()
+	material.albedo_color = color
+	material.roughness = 0.28
+	material.emission_enabled = true
+	material.emission = color
+	material.emission_energy_multiplier = 1.2
+	_pulse_materials.append(material)
+	return material
 
 
 func _build_room_shell(center: Vector3, width: float, depth: float, height: float,

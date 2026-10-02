@@ -58,3 +58,6 @@ One line per note. Read this file at the start of every session.
   player rankings sorted by kills.
 - [match-disconnect-rules.md](match-disconnect-rules.md) - disconnected actors
   disappear, underpopulated matches return to the menu, and empty TDM teams trigger a new round.
+- [healing-station-visual-style.md](healing-station-visual-style.md) - healing
+  stations are tall green portals with world UI in their entrances, and arena
+  polish should add landmarks and feedback without camera shake.
