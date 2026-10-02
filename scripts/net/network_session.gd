@@ -40,7 +40,9 @@ const TEAM_BLUE := "BLUE"
 const TEAM_FFA := "FFA"
 const MAX_HEALTH := 100.0
 const MAX_SHIELD := 100.0
-const SNITCH_HEALTH := 35.0
+# Two ordinary 4.4-damage shots destroy a Snitch. High-damage abilities can
+# still destroy one in a single hit as part of their normal advantage.
+const SNITCH_HEALTH := 8.8
 const SNITCH_SYNC_INTERVAL := 0.1
 const Powers = preload("res://scripts/power_abilities.gd")
 const STATION_POSITIONS := [Vector3(-28.0, 0.0, -28.0), Vector3(33.0, 0.0, -31.0)]

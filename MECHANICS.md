@@ -36,7 +36,8 @@ through thin geometry.
 
 At the beginning of each round the server creates one flying ball for every
 power. Their paths, health, destruction, and ownership are server controlled and
-synchronized to all clients. A ball has 35 health. The player who destroys it
+synchronized to all clients. A ball has 8.8 health, so two ordinary bullets
+destroy it. The player who destroys it
 receives its power. If that player already held a power, the replaced power is
 released back into the arena as another ball.
 
