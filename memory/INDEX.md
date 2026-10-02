@@ -47,7 +47,7 @@ One line per note. Read this file at the start of every session.
 - [controller-layout.md](controller-layout.md) - gameplay uses the left stick,
   right stick, right trigger, and south face button.
 - [shot-impact-feedback.md](shot-impact-feedback.md) - shots create impact
-  debris and briefly shake the local camera.
+  debris without shaking the camera.
 - [public-lobby-browser.md](public-lobby-browser.md) - online setup lists
   joinable lobbies for the selected mode and filters them by room code.
 - [tdm-round-format.md](tdm-round-format.md) - TDM uses balanced random teams,
@@ -56,3 +56,5 @@ One line per note. Read this file at the start of every session.
   their killer and follow that killer's elimination chain.
 - [team-leaderboards.md](team-leaderboards.md) - the TDM HUD shows per-team
   player rankings sorted by kills.
+- [match-disconnect-rules.md](match-disconnect-rules.md) - disconnected actors
+  disappear, underpopulated matches return to the menu, and empty TDM teams trigger a new round.

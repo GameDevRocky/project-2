@@ -93,12 +93,6 @@ signal pair_inherited(pair: Dictionary)
 ## Maximum right-stick turn speed in radians per second.
 @export var controller_look_speed: float = 2.8
 
-## Camera movement applied for a brief instant when a shot leaves the weapon.
-@export var shot_shake_duration: float = 0.11
-@export var shot_shake_position: float = 0.028
-@export var shot_shake_roll: float = 0.012
-
-
 # --- Live numbers, rebuilt by _apply_pair() ---------------------------------
 var _speed: float
 var _jump_velocity: float
@@ -154,7 +148,6 @@ var _camera: Camera3D
 var _view_model: Node3D
 var _muzzle: MeshInstance3D
 var _camera_home := Vector3(0.0, 1.6, 0.0)
-var _shake_remaining := 0.0
 var _spectating := false
 var _spectate_target: Node3D
 
@@ -357,7 +350,6 @@ func _unhandled_input(event: InputEvent) -> void:
 
 func _physics_process(delta: float) -> void:
 	if _dead:
-		_animate_screen_shake(delta)
 		return
 
 	_tick_timers(delta)
@@ -366,7 +358,6 @@ func _physics_process(delta: float) -> void:
 	_shoot(delta)
 	_regenerate(delta)
 	_animate_view_model(delta)
-	_animate_screen_shake(delta)
 
 
 func _look_with_controller(delta: float) -> void:
@@ -487,7 +478,6 @@ func _shoot(_delta: float) -> void:
 		})
 
 	_kick_view_model()
-	_start_screen_shake()
 	stats_changed.emit()
 
 
@@ -579,28 +569,6 @@ func _animate_view_model(delta: float) -> void:
 func _kick_view_model() -> void:
 	_view_model.position.z += 0.05
 	_view_model.position.y -= 0.012
-
-
-func _start_screen_shake() -> void:
-	_shake_remaining = shot_shake_duration
-
-
-func _animate_screen_shake(delta: float) -> void:
-	if _spectating:
-		return
-	if _shake_remaining > 0.0:
-		_shake_remaining = maxf(_shake_remaining - delta, 0.0)
-		var weight := _shake_remaining / maxf(shot_shake_duration, 0.001)
-		_camera.position = _camera_home + Vector3(
-			randf_range(-shot_shake_position, shot_shake_position) * weight,
-			randf_range(-shot_shake_position, shot_shake_position) * weight,
-			0.0)
-		_camera.rotation.z = randf_range(-shot_shake_roll, shot_shake_roll) * weight
-	else:
-		_camera.position = _camera.position.lerp(
-			_camera_home, clampf(delta * 24.0, 0.0, 1.0))
-		_camera.rotation.z = lerp_angle(
-			_camera.rotation.z, 0.0, clampf(delta * 24.0, 0.0, 1.0))
 
 
 # ============================================================================
@@ -703,7 +671,6 @@ func start_spectating(target: Node3D) -> void:
 		return
 	_spectating = true
 	_spectate_target = target
-	_shake_remaining = 0.0
 	velocity = Vector3.ZERO
 	collision_layer = 0
 	collision_mask = 0

@@ -16,8 +16,10 @@ signal remote_shot_received(peer_id: int, origin: Vector3, direction: Vector3, s
 signal health_changed(peer_id: int, health: float)
 signal player_eliminated(victim_peer_id: int, attacker_peer_id: int)
 signal player_respawned(peer_id: int)
+signal player_left_match(peer_id: int)
 signal score_changed(scores: Dictionary, stats: Dictionary)
 signal match_finished(title: String, detail: String)
+signal match_abandoned(detail: String)
 
 enum ConnectionState { OFFLINE, CONNECTING, CONNECTED }
 
@@ -342,7 +344,8 @@ func _request_start_match() -> void:
 	var lobby: Dictionary = _server_lobbies[code]
 	if int(lobby.host_id) != peer_id or str(lobby.state) != "lobby":
 		return
-	if (lobby.players as Dictionary).is_empty():
+	if (lobby.players as Dictionary).size() < 2:
+		_client_request_failed.rpc_id(peer_id, "At least two players are required to start a match.")
 		return
 	_server_begin_round(code)
 
@@ -512,6 +515,12 @@ func _client_respawned(peer_id: int) -> void:
 
 
 @rpc("authority", "call_remote", "reliable")
+func _client_player_left(peer_id: int) -> void:
+	players.erase(peer_id)
+	player_left_match.emit(peer_id)
+
+
+@rpc("authority", "call_remote", "reliable")
 func _client_score_changed(scores: Dictionary, stats: Dictionary) -> void:
 	score_changed.emit(scores.duplicate(true), stats.duplicate(true))
 
@@ -520,6 +529,12 @@ func _client_score_changed(scores: Dictionary, stats: Dictionary) -> void:
 func _client_match_finished(title: String, detail: String) -> void:
 	match_active = false
 	match_finished.emit(title, detail)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _client_match_abandoned(detail: String) -> void:
+	_clear_client_lobby()
+	match_abandoned.emit(detail)
 
 
 func _server_eliminate(code: String, victim: int, attacker: int) -> void:
@@ -683,6 +698,7 @@ func _server_remove_peer(peer_id: int) -> void:
 		_peer_lobbies.erase(peer_id)
 		return
 	var lobby: Dictionary = _server_lobbies[code]
+	var previous_state := str(lobby.get("state", ""))
 	var lobby_players: Dictionary = lobby.players
 	lobby_players.erase(peer_id)
 	(lobby.health as Dictionary).erase(peer_id)
@@ -697,10 +713,43 @@ func _server_remove_peer(peer_id: int) -> void:
 		lobby.host_id = int(lobby_players.keys()[0])
 	lobby.players = lobby_players
 	_server_lobbies[code] = lobby
-	if str(lobby.state) == "lobby":
+	if previous_state == "lobby":
 		_broadcast_lobby(code)
-	elif str(lobby.mode) == "SURVIVAL":
-		_check_survival_winner(code)
+	elif previous_state == "match" or previous_state == "intermission":
+		for member_value in lobby_players.keys():
+			_client_player_left.rpc_id(int(member_value), peer_id)
+		if lobby_players.size() <= 1:
+			_return_match_to_menu(code, "The match ended because too few players remain.")
+			return
+		if previous_state == "match":
+			if str(lobby.mode) == "TEAM_DEATH_MATCH":
+				var red_count := 0
+				var blue_count := 0
+				for record_value in lobby_players.values():
+					var record: Dictionary = record_value
+					if str(record.get("team", "")) == TEAM_RED:
+						red_count += 1
+					elif str(record.get("team", "")) == TEAM_BLUE:
+						blue_count += 1
+				if red_count == 0 or blue_count == 0:
+					var remaining_team := TEAM_BLUE if red_count == 0 else TEAM_RED
+					_finish_match(code, "TEAM %s REMAINS" % remaining_team,
+						"The opposing team left the match.")
+			else:
+				_check_survival_winner(code)
+	_broadcast_public_lobbies()
+
+
+func _return_match_to_menu(code: String, detail: String) -> void:
+	if not _server_lobbies.has(code):
+		return
+	var lobby: Dictionary = _server_lobbies[code]
+	var remaining_peers := (lobby.players as Dictionary).keys()
+	_server_lobbies.erase(code)
+	for member_value in remaining_peers:
+		var member := int(member_value)
+		_peer_lobbies.erase(member)
+		_client_match_abandoned.rpc_id(member, detail)
 	_broadcast_public_lobbies()
 
 

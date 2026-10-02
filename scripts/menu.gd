@@ -507,7 +507,7 @@ func _on_network_state_changed(_state: int, detail: String) -> void:
 
 
 func _on_network_failed(detail: String) -> void:
-	if current_screen == "online_setup" and is_instance_valid(status_label):
+	if (current_screen == "online_setup" or current_screen == "lobby") and is_instance_valid(status_label):
 		status_label.text = detail.to_upper()
 
 

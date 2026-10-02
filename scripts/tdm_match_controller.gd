@@ -78,8 +78,10 @@ func start_match(owner_game, local_actor, lobby_records: Array[Dictionary], _tea
 	NetworkSession.health_changed.connect(_on_health_changed)
 	NetworkSession.player_eliminated.connect(_on_player_eliminated)
 	NetworkSession.player_respawned.connect(_on_player_respawned)
+	NetworkSession.player_left_match.connect(_on_player_left_match)
 	NetworkSession.score_changed.connect(_on_score_changed)
 	NetworkSession.match_finished.connect(_on_match_finished)
+	NetworkSession.match_abandoned.connect(_on_match_abandoned)
 	NetworkSession.match_started.connect(_on_next_round_started)
 	NetworkSession.server_left.connect(_on_server_left)
 	_build_hud()
@@ -173,6 +175,29 @@ func _on_player_respawned(peer_id: int) -> void:
 	_refresh_score_label()
 
 
+func _on_player_left_match(peer_id: int) -> void:
+	var actor = actors.get(peer_id)
+	actors.erase(peer_id)
+	alive.erase(peer_id)
+	stats.erase(peer_id)
+	_killer_of.erase(peer_id)
+	for index in range(players.size() - 1, -1, -1):
+		if int(players[index].get("peer_id", 0)) == peer_id:
+			players.remove_at(index)
+	if is_instance_valid(actor):
+		actor.queue_free()
+	if _spectated_peer_id == peer_id:
+		_spectated_peer_id = 0
+		var fallback_id := _first_alive_remote_peer()
+		if fallback_id != 0:
+			_begin_spectating(fallback_id)
+		else:
+			local_player.stop_spectating()
+			spectate_label.text = ""
+			hud.set_spectating(false)
+	_refresh_score_label()
+
+
 func _on_score_changed(next_scores: Dictionary, next_stats: Dictionary) -> void:
 	scores = next_scores.duplicate(true)
 	stats = next_stats.duplicate(true)
@@ -190,6 +215,12 @@ func _on_match_finished(title: String, detail: String) -> void:
 func _on_next_round_started(_mode: String, _roster: Array[Dictionary]) -> void:
 	if ended:
 		get_tree().change_scene_to_file("res://scenes/match.tscn")
+
+
+func _on_match_abandoned(_detail: String) -> void:
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	NetworkSession.disconnect_game()
+	get_tree().change_scene_to_file("res://scenes/main.tscn")
 
 
 func _on_server_left() -> void:
@@ -293,6 +324,15 @@ func _resolve_spectate_target(requested_peer_id: int) -> int:
 		visited[candidate] = true
 		candidate = int(_killer_of[candidate])
 	return candidate
+
+
+func _first_alive_remote_peer() -> int:
+	var local_id := NetworkSession.local_peer_id()
+	for peer_value in actors.keys():
+		var peer_id := int(peer_value)
+		if peer_id != local_id and bool(alive.get(peer_id, false)):
+			return peer_id
+	return 0
 
 
 func _record_for(peer_id: int) -> Dictionary:
