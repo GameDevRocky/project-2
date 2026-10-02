@@ -5,9 +5,19 @@ extends Node
 ## this controller turns network events into visible actors and HUD updates.
 ##
 ## The HUD is drawn by the overhaul's screens: Team Deathmatch uses
-## scripts/ui/tdm_hud.gd (score pill, Tab scoreboard, respawn overlay, result
+## scripts/ui/tdm_hud.gd (score pill, Tab scoreboard, death screen, result
 ## screen) and Survival uses scripts/hud.gd. Both only DRAW; every number they
-## show comes from this controller or from the local player.
+## show comes from this controller or from the local player. Both modes get the
+## Esc pause menu (scripts/ui/pause_menu.gd).
+##
+## WHILE YOU WAIT TO RESPAWN (TDM)
+## The server brings you back NetworkSession.RESPAWN_SECONDS after you are
+## painted out. Meanwhile this controller:
+##   - points a spectator camera (scripts/spectator_camera.gd) at a living
+##     teammate, first or third person (Q / E to switch teammate, V to switch
+##     view - or the death screen's buttons);
+##   - remembers which gun you pick on the death screen's loadout (keys 1-5),
+##     and hands it to the player when the server respawns you.
 
 const Projectile = preload("res://scripts/projectile.gd")
 const RemotePlayer = preload("res://scripts/net/remote_player.gd")
@@ -15,6 +25,9 @@ const RemoteLook = preload("res://scripts/visual/remote_look.gd")
 const UITheme = preload("res://scripts/ui/ui_theme.gd")
 const SurvivalHudScript = preload("res://scripts/hud.gd")
 const TdmHudScript = preload("res://scripts/ui/tdm_hud.gd")
+const PauseMenuScript = preload("res://scripts/ui/pause_menu.gd")
+const SpectatorCameraScript = preload("res://scripts/spectator_camera.gd")
+const Weapons = preload("res://scripts/weapons.gd")
 const MATCH_SECONDS := 600.0
 const RED := UITheme.TEAM_RED
 const BLUE := UITheme.TEAM_BLUE
@@ -41,6 +54,18 @@ var _refresh_timer := 0.0
 ## Time (in Time.get_ticks_msec() milliseconds) the server will respawn the
 ## local player, so the HUD can count down. 0 while alive.
 var _local_respawn_at := 0
+var pause_menu = null
+
+## The gun picked on the death screen; equipped at the next respawn. Everyone
+## starts with the Brush Rifle.
+var chosen_weapon := Weapons.BRUSH_RIFLE
+## Who painted you out last, for the death screen.
+var killed_by_name := ""
+var killed_by_color := Color.WHITE
+## The spectator camera while you are dead in TDM, otherwise null.
+var _spectator = null
+## First or third person. Kept between deaths, so your choice sticks.
+var _spectate_mode := SpectatorCameraScript.THIRD_PERSON
 
 
 func start_match(owner_game, local_actor, lobby_records: Array[Dictionary], _team: String) -> void:
@@ -125,18 +150,33 @@ func _on_remote_shot(peer_id: int, origin: Vector3, direction: Vector3, shot_dat
 	var shooter = actors.get(peer_id)
 	if not is_instance_valid(shooter):
 		return
-	var glob := Node3D.new()
-	glob.set_script(Projectile)
-	glob.damage = float(shot_data.get("damage", 22.0))
-	glob.speed = float(shot_data.get("speed", 90.0))
-	glob.splash_radius = float(shot_data.get("splash_radius", 0.0))
-	glob.splash_mult = float(shot_data.get("splash_mult", 0.0))
-	glob.color = shot_data.get("color", Color.WHITE)
-	glob.can_deal_damage = false
-	glob.configure_tdm(shooter, str(shooter.get("tdm_team")))
-	game.add_child(glob)
-	glob.setup(origin, direction, true)
+	# Which gun fired it, so the copy flies and looks the same as on the
+	# shooter's screen (pellets, arc, bolt size). A server that does not pass
+	# the gun along yet sends no "weapon" key: that reads as the Brush Rifle.
+	var weapon_index := int(shot_data.get("weapon", Weapons.BRUSH_RIFLE))
+	var weapon := Weapons.get_weapon(weapon_index)
+	RemoteLook.set_weapon(shooter, weapon_index)
+	var pellets := maxi(int(weapon.pellets), 1)
+	for i in pellets:
+		var glob := Node3D.new()
+		glob.set_script(Projectile)
+		glob.damage = float(shot_data.get("damage", 22.0))
+		glob.speed = float(shot_data.get("speed", 90.0))
+		glob.splash_radius = float(shot_data.get("splash_radius", 0.0))
+		glob.splash_mult = float(shot_data.get("splash_mult", 0.0))
+		glob.color = shot_data.get("color", Color.WHITE)
+		Weapons.apply_to_shot(glob, weapon)
+		# Only a picture of their shot: the shooter's own game reports its hits.
+		glob.can_deal_damage = false
+		glob.configure_tdm(shooter, str(shooter.get("tdm_team")))
+		game.add_child(glob)
+		var shot_direction := direction
+		if pellets > 1:
+			shot_direction = Weapons.spread_direction(direction, float(weapon.spread))
+		glob.setup(origin, shot_direction, true)
 	RemoteLook.on_fire(shooter)
+	if _spectator != null and _spectator.target == shooter:
+		_spectator.on_target_fired()
 
 
 func _on_health_changed(peer_id: int, next_health: float) -> void:
@@ -154,8 +194,16 @@ func _on_player_eliminated(victim_peer_id: int, attacker_peer_id: int) -> void:
 	var victim = actors.get(victim_peer_id)
 	if victim_peer_id == NetworkSession.local_peer_id():
 		_local_respawn_at = Time.get_ticks_msec() + int(NetworkSession.RESPAWN_SECONDS * 1000.0)
+		var killer := _record_for(attacker_peer_id)
+		killed_by_name = str(killer.get("name", ""))
+		killed_by_color = _team_color_for(killer)
+		if game_mode == "TEAM_DEATH_MATCH" and not ended:
+			_start_spectating()
 	elif is_instance_valid(victim):
 		victim.eliminate()
+		# The teammate you were watching was painted out: move on to another.
+		if _spectator != null and _spectator.target == victim:
+			spectate_step(1)
 	var attacker_name := str(_record_for(attacker_peer_id).get("name", "Player"))
 	var victim_name := str(_record_for(victim_peer_id).get("name", "Player"))
 	if game_mode == "TEAM_DEATH_MATCH":
@@ -173,6 +221,10 @@ func _on_player_respawned(peer_id: int) -> void:
 	var at := _spawn_for(_record_for(peer_id))
 	if peer_id == NetworkSession.local_peer_id():
 		_local_respawn_at = 0
+		_stop_spectating()
+		# Equip the gun picked on the death screen, if it changed.
+		if int(local_player.weapon_index) != chosen_weapon:
+			local_player.set_weapon(chosen_weapon)
 		local_player.tdm_respawn(at)
 	else:
 		actor.respawn(at)
@@ -198,6 +250,8 @@ func _on_match_finished(title: String, detail: String) -> void:
 		return
 	ended = true
 	_local_respawn_at = 0
+	if pause_menu != null:
+		pause_menu.set_enabled(false)
 	local_player.set_physics_process(false)
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	if game_mode == "TEAM_DEATH_MATCH":
@@ -235,6 +289,10 @@ func _build_hud() -> void:
 		hud.name = "OnlineHUD"
 		game.add_child(hud)
 		hud.bind_player(local_player)
+	pause_menu = PauseMenuScript.new()
+	pause_menu.name = "PauseMenu"
+	game.add_child(pause_menu)
+	pause_menu.setup(local_player, _return_to_menu)
 	_refresh_scores()
 
 
@@ -252,6 +310,109 @@ func _refresh_scores() -> void:
 			if bool(value):
 				alive_count += 1
 		hud.set_status("SURVIVAL", "%d ALIVE  ·  LAST PLAYER STANDING" % alive_count)
+
+
+# ============================================================================
+# SPECTATING AND LOADOUT (TDM, while you wait to respawn)
+# ============================================================================
+
+## Keys while you are painted out: Q / E switch teammate, V switches first /
+## third person, 1-5 pick a gun. _unhandled_input only sees keys nothing else
+## used (the pause menu takes Esc first).
+func _unhandled_input(event: InputEvent) -> void:
+	if ended or game_mode != "TEAM_DEATH_MATCH" or not local_player.is_dead():
+		return
+	if pause_menu != null and pause_menu.is_open():
+		return
+	if not (event is InputEventKey and event.pressed and not event.echo):
+		return
+	var key := (event as InputEventKey).physical_keycode
+	match key:
+		KEY_Q:
+			spectate_step(-1)
+		KEY_E:
+			spectate_step(1)
+		KEY_V:
+			toggle_spectate_view()
+		KEY_1, KEY_2, KEY_3, KEY_4, KEY_5:
+			pick_weapon(key - KEY_1)
+		_:
+			return
+	get_viewport().set_input_as_handled()
+
+
+## The gun to respawn with. Nothing changes until the respawn.
+func pick_weapon(index: int) -> void:
+	chosen_weapon = posmod(index, Weapons.count())
+
+
+## Living teammates you can watch, in lobby order.
+func _spectate_candidates() -> Array:
+	var found: Array = []
+	for record in players:
+		var actor = actors.get(int(record.get("peer_id", 0)))
+		if actor == null or actor == local_player or not is_instance_valid(actor):
+			continue
+		if str(actor.get("tdm_team")) == session_team and bool(actor.get("alive")):
+			found.append(actor)
+	return found
+
+
+func spectate_choices() -> int:
+	return _spectate_candidates().size()
+
+
+func _start_spectating() -> void:
+	if _spectator == null:
+		_spectator = Camera3D.new()
+		_spectator.set_script(SpectatorCameraScript)
+		_spectator.name = "SpectatorCamera"
+		_spectator.death_spot = local_player.global_position
+		game.add_child(_spectator)
+	var choices := _spectate_candidates()
+	_spectator.follow(choices[0] if not choices.is_empty() else null, _spectate_mode)
+
+
+func _stop_spectating() -> void:
+	if _spectator != null:
+		_spectator.queue_free()
+		_spectator = null
+
+
+## Watch the next (+1) or previous (-1) living teammate.
+func spectate_step(direction: int) -> void:
+	if _spectator == null:
+		return
+	var choices := _spectate_candidates()
+	if choices.is_empty():
+		_spectator.follow(null, _spectate_mode)
+		return
+	var at := choices.find(_spectator.target)
+	var next := 0 if at < 0 else posmod(at + direction, choices.size())
+	_spectator.follow(choices[next], _spectate_mode)
+
+
+func toggle_spectate_view() -> void:
+	_spectate_mode = SpectatorCameraScript.FIRST_PERSON if _spectate_mode == SpectatorCameraScript.THIRD_PERSON else SpectatorCameraScript.THIRD_PERSON
+	if _spectator != null:
+		_spectator.set_mode(_spectate_mode)
+
+
+## What the death screen shows: the watched teammate's name ("" if nobody).
+func spectate_name() -> String:
+	if _spectator == null or _spectator.target == null or not is_instance_valid(_spectator.target):
+		return ""
+	if not bool(_spectator.target.get("alive")):
+		return ""
+	return str(_spectator.target.get("display_name"))
+
+
+func spectate_color() -> Color:
+	return UITheme.team_color(session_team)
+
+
+func spectate_first_person() -> bool:
+	return _spectate_mode == SpectatorCameraScript.FIRST_PERSON
 
 
 ## Seconds until the local player respawns, or 0 when no respawn is pending.

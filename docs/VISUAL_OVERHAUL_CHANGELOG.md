@@ -322,6 +322,49 @@ only how things look changed.
   pinned sketches replace them).
 - Sunlit floor 191/255 Forward+, 197/255 Compatibility (unchanged).
 
+## Online merge, pause menu, spectating and loadouts (2026-10-01)
+Merged `origin/main` (b46987a, Rocklyn's online PR #4) into this branch.
+`main` made both modes online and human-only; that direction was kept, with
+the overhaul's look laid over it:
+- **Menu:** `main`'s online setup (CREATE LOBBY / JOIN with a code) and online
+  lobby (code in the header, START MATCH for the host only, a single PLAYERS
+  list for Survival) rebuilt on the container layout. Mode descriptions use
+  `main`'s wording.
+- **Match:** `main`'s online controller, drawing with the overhaul HUDs: TDM
+  uses `tdm_hud.gd` (score pill, Tab scoreboard filled from the server's
+  kills/deaths, result screen) plus a new top-right **kill feed** in place of
+  `main`'s centre banner; Survival uses `hud.gd` with a players-alive pill.
+- **Other players** (`remote_player.gd`) are dressed as Canvas Runners in their
+  own customization by `scripts/visual/remote_look.gd`, from outside the
+  networking code. Their gun is the Paint Blaster prop on the same `AimPivot`
+  (moved into the runner's hand), so it still follows their aim pitch.
+- **Shots:** `main`'s small fast tracers with no impact splats (Rocklyn's
+  recorded decision) replace the overhaul's splats; the crosshair hit marker
+  is kept.
+
+New features (Jarman's request):
+- **Pause menu** (`scripts/ui/pause_menu.gd`), `Esc` in TDM and Survival:
+  RESUME / LEAVE MATCH. Online, so the world keeps going; your own inputs stop.
+- **10 second TDM respawn** (`RESPAWN_SECONDS` in `network_session.gd`) with a
+  **death screen** (`scripts/ui/death_screen.gd`): who painted you out, the
+  countdown, and **spectating** a living teammate
+  (`scripts/spectator_camera.gd`) in third person or first person (`Q`/`E`,
+  `V`).
+- **Loadout:** five guns (`scripts/weapons.gd`) picked on the death screen and
+  equipped on respawn — Brush Rifle (AR, unchanged), Fine Liner (sniper with a
+  scope), Prism Beam (overheating rainbow energy gun), Splat Bucket (8-pellet
+  shotgun), Blob Lobber (arcing splash launcher). Four new generated models
+  (`tools/blender/create_weapon_*.py`) with first-person and one-piece prop
+  copies; gun skins restyle them all. Shots carry the gun id so other players
+  see the right gun and shot.
+
+**Needs a server redeploy (Rocklyn):** the 10 s respawn, passing the gun id
+along with shots, and accepting back bling 10–11 all live in the dedicated
+server's copy of `network_session.gd`. Until the live server is updated it
+keeps respawning after 3 s (the death screen simply closes early), other
+players see everyone's shots as the Brush Rifle, and back bling 10–11 shows as
+9 to others.
+
 ## Bugs discovered
 Stage 1 (2026-09-29), on `main` at `3b09061`:
 1. **TDM has no gameplay HUD.** `game.gd::_ready()` returns before
@@ -412,3 +455,14 @@ Stage 3:
   number (e.g. -899) for one frame on a killing blow, because the player emits
   `stats_changed` before clamping health to 0. Display now clamps at 0; the
   player script is unchanged.
+
+Online merge (2026-10-01), both found in code that came from `main`:
+- Online Survival ran the offline wave code every frame against a HUD that is
+  never built (`game.gd::_process` → `_update_offer` → `_hud.set_offer` on
+  null), and a death would have called the offline ending the same way.
+  `game.gd` now skips that code when the offline HUD does not exist, and only
+  connects the offline death handler outside online matches.
+- LEAVE LOBBY (or the server dropping while in the menu) made Godot reject the
+  menu's lobby update ("Cannot convert argument 1 from Array to Array"):
+  `NetworkSession` sends a plain empty list, the handler only took a typed
+  one. The handler now accepts any list.

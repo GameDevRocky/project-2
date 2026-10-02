@@ -26,7 +26,9 @@ const MAX_CONNECTIONS := 64
 const MAX_LOBBY_PLAYERS := 20
 const MAX_NAME_LENGTH := 24
 const MATCH_SECONDS := 600.0
-const RESPAWN_SECONDS := 3.0
+## Team Deathmatch: seconds between being painted out and respawning. While
+## waiting, the client spectates teammates and can change loadout.
+const RESPAWN_SECONDS := 10.0
 const TEAM_RED := "RED"
 const TEAM_BLUE := "BLUE"
 const TEAM_FFA := "FFA"
@@ -371,6 +373,9 @@ func _submit_shot(origin: Vector3, direction: Vector3, shot_data: Dictionary) ->
 		"splash_radius": clampf(float(shot_data.get("splash_radius", 0.0)), 0.0, 10.0),
 		"splash_mult": clampf(float(shot_data.get("splash_mult", 0.0)), 0.0, 1.0),
 		"color": shot_data.get("color", Color.WHITE),
+		# Which loadout gun fired (scripts/weapons.gd), so other clients draw
+		# the right shot and gun. Purely visual; damage stays clamped above.
+		"weapon": clampi(int(shot_data.get("weapon", 0)), 0, 4),
 	}
 	for member_value in (lobby.players as Dictionary).keys():
 		var member := int(member_value)
@@ -651,7 +656,7 @@ func _clean_customization(value: Variant) -> Dictionary:
 		"hat": clampi(int(source.get("hat", 0)), 0, 9),
 		"mask": clampi(int(source.get("mask", 0)), 0, 9),
 		"gun_skin": clampi(int(source.get("gun_skin", 0)), 0, 9),
-		"back_bling": clampi(int(source.get("back_bling", 0)), 0, 9),
+		"back_bling": clampi(int(source.get("back_bling", 0)), 0, 11),
 	}
 
 

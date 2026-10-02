@@ -17,6 +17,9 @@ const UITheme = preload("res://scripts/ui/ui_theme.gd")
 var _value_label: Label
 var _max_label: Label
 var _status: Label
+var _caption: Label
+## True while an energy gun is locked out after emptying its charge.
+var _overheated := false
 var _tank: Tank
 var _last_ammo: float = -1.0
 ## Seconds left to keep showing "REFILLING" after the last rise.
@@ -85,11 +88,11 @@ func _init() -> void:
 
 	var caption_row := HBoxContainer.new()
 	column.add_child(caption_row)
-	var caption := Label.new()
-	caption.theme_type_variation = &"HudCaption"
-	caption.text = "PAINT"
-	caption.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	caption_row.add_child(caption)
+	_caption = Label.new()
+	_caption.theme_type_variation = &"HudCaption"
+	_caption.text = "PAINT"
+	_caption.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	caption_row.add_child(_caption)
 	_status = Label.new()
 	_status.theme_type_variation = &"HudCaption"
 	caption_row.add_child(_status)
@@ -135,10 +138,27 @@ func set_values(ammo: float, max_ammo: float) -> void:
 	_update_status(fraction)
 
 
+## The caption over the tank: the equipped gun's name (TDM loadouts).
+func set_caption(text: String) -> void:
+	if _caption.text != text:
+		_caption.text = text
+
+
+## Shows OVERHEATED while an energy gun is locked out.
+func set_overheated(on: bool) -> void:
+	if _overheated == on:
+		return
+	_overheated = on
+	_update_status(_tank.fraction)
+
+
 func _update_status(fraction: float) -> void:
 	var text := ""
 	var color := UITheme.DIM
-	if _refill_hold > 0.0:
+	if _overheated:
+		text = "OVERHEATED"
+		color = UITheme.HEALTH_FULL
+	elif _refill_hold > 0.0:
 		text = "REFILLING"
 		color = UITheme.PAINT
 	elif _last_ammo < 1.0:

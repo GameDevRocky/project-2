@@ -529,8 +529,11 @@ func _on_lobby_joined(_code: String, mode: String) -> void:
 	_build_lobby_screen("LOBBY CONNECTED")
 
 
-func _on_online_lobby_changed(roster: Array[Dictionary]) -> void:
-	lobby_players = roster.duplicate(true)
+## `roster` is untyped on purpose: NetworkSession sends a plain empty list
+## ([]) when the lobby is cleared (LEAVE LOBBY, or the server dropping), and a
+## parameter typed Array[Dictionary] made Godot refuse that call with an error.
+func _on_online_lobby_changed(roster: Array) -> void:
+	lobby_players.assign(roster.duplicate(true))
 	if current_screen == "lobby":
 		var local_record := NetworkSession.players.get(NetworkSession.local_peer_id(), {}) as Dictionary
 		local_team = str(local_record.get("team", local_team))

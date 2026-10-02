@@ -169,6 +169,13 @@ func _ensure_input_actions() -> void:
 		click.button_index = MOUSE_BUTTON_LEFT
 		InputMap.action_add_event("fire", click)
 
+	# Right mouse: zoom (only the Fine Liner sniper uses it).
+	if not InputMap.has_action("aim"):
+		InputMap.add_action("aim")
+		var right_click := InputEventMouseButton.new()
+		right_click.button_index = MOUSE_BUTTON_RIGHT
+		InputMap.action_add_event("aim", right_click)
+
 
 func _build_arena() -> void:
 	_arena = Node3D.new()

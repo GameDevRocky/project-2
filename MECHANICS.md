@@ -13,30 +13,57 @@ Open the project in Godot 4.7 and press **F5**.
 | Move | `W` `A` `S` `D` |
 | Jump | `Space` |
 | Fire paint | Left mouse |
+| Zoom (Fine Liner only) | Hold right mouse |
 | Look | Mouse movement |
 | **Inherit a core** | `E` while standing near it |
-| Release / recapture mouse | `Esc` / click |
-| Restart after a run ends | `R` |
+| Pause menu (Resume / Leave Match) | `Esc` |
+| Return to menu after Survival ends | `R` |
 | Hold the TDM scoreboard | `Tab` |
+| While waiting to respawn (TDM): switch teammate / first-third person | `Q` `E` / `V` |
+| While waiting to respawn (TDM): pick a gun | `1`–`5` or click a card |
 
 ## Game modes
 
-**PLAY** opens the game-mode screen. The modes are separate:
+Both modes are **online and human-only** (merged from `main` on 2026-10-01,
+Rocklyn's online branch). **PLAY** → pick a mode → **CREATE LOBBY** (you get a
+five-letter code) or type a friend's code and **JOIN**. The host presses
+**START MATCH**. A dedicated Godot server (`scripts/net/network_session.gd`,
+run with `-- --server`) owns lobbies, teams, health, scores, eliminations and
+respawns; each client reports its own shots and hits.
 
-- **Team Death Match** fills two local simulated teams of ten, counts down,
-  then starts a ten-minute match. Team kills score points. The local player and
-  bots use the shared paint projectile and damage path. Bots target the other
-  team, respawn after three seconds, and update kills, deaths, and assists.
-  Holding `Tab` shows the live roster scoreboard. At `00:00`, the higher team
-  kill total wins (equal totals draw).
-- **Survival** starts the original six-wave run directly. Its waves, enemy
-  archetypes, inheritance, and Survival HUD remain on the existing path.
+- **Team Death Match** — RED versus BLUE, ten minutes, most eliminations wins.
+  When you are painted out you wait **10 seconds** to respawn. Meanwhile you
+  **spectate a living teammate** in third person (behind their shoulder) or
+  first person (from their eyes, with their gun on screen) — `Q`/`E` switch
+  teammate, `V` switches view; with no teammate alive the camera circles where
+  you fell. The same screen holds the **loadout**: pick one of five guns and you
+  respawn with it.
+- **Survival** — free-for-all, one life each, last player standing wins.
 
-The menu passes generic lobby records and the selected mode into `game.gd`.
-`game.gd` keeps Survival orchestration and starts
-`scripts/tdm_match_controller.gd` only for TDM. TDM bots are adapted from
-`scripts/enemy.gd`; `scripts/projectile.gd` remains the shared paint projectile.
-This is local simulation, not networking.
+`Esc` opens the **pause menu** in both modes (RESUME / LEAVE MATCH). An online
+match cannot stop for one player, so pausing frees your mouse and ignores your
+own keys until you resume; the world keeps going and the menu says so.
+
+The offline paths (Survival's six PvE waves, TDM's local bot teams) are still
+in `game.gd` / `enemy.gd` but nothing reaches them any more: `game.gd` sends you
+back to the menu unless you are in an online match.
+
+## Loadout (TDM)
+
+Everyone starts a match with the Brush Rifle. Pick a gun on the death screen;
+it is equipped when you respawn. Numbers live in `scripts/weapons.gd`, and the
+inherited pair still multiplies them (damage, fire rate, tank size, refill).
+
+| # | Gun | Role | Effect |
+| --- | --- | --- | --- |
+| 1 | **Brush Rifle** | Assault rifle | The original Paint Blaster: 22 damage, 0.28 s, 30 paint. Unchanged. |
+| 2 | **Fine Liner** | Sniper | 85 damage, one shot per 1.3 s, 5 paint. Hold right mouse to zoom (scope overlay, slower turning); a little spread unless zoomed. |
+| 3 | **Prism Beam** | Energy gun | 9 damage bolts every 0.085 s in rainbow colours. No paint: a charge that, emptied, **overheats** and locks until fully recharged. |
+| 4 | **Splat Bucket** | Shotgun | 8 droplets × 10 damage in a 7° cone, short range (~27 m), 6 loads. |
+| 5 | **Blob Lobber** | Launcher | Heavy blobs that **arc** under gravity and burst (4.5 m splash), 50 damage, 4 loads. |
+
+Each shot tells the server which gun fired it, so other players see the right
+gun in your hands and the right shot (pellets, arc, rainbow bolts).
 
 ## The core loop
 
@@ -90,8 +117,8 @@ rather than unfair.
 
 ## Paint
 
-Your reservoir holds 30 and refills at 11/sec, starting 0.6s after your last
-shot. Hold the trigger down and you run dry; break contact for a moment and it
+With the Brush Rifle your reservoir holds 30 and refills at 11/sec, starting
+0.6s after your last shot (other guns: see the loadout table above). Hold the trigger down and you run dry; break contact for a moment and it
 comes back. The Sprayer pair spends paint almost exactly as fast as it returns,
 so rapid fire is a sustain problem as well as a damage one.
 
@@ -120,19 +147,19 @@ is fixed, never randomised — dying should teach you the room.
 
 | System | Lives in | Owns |
 | --- | --- | --- |
-| **Survival game logic** | `scripts/game.gd` | Waves, Survival spawning, inherit offer, Survival endings |
-| **TDM match state** | `scripts/tdm_match_controller.gd` | Lobby roster, teams, TDM bot spawning, score, timer, respawn, scoreboard/results |
-| **Survival UX** | `scripts/hud.gd` | Survival HUD and Survival end panel |
-| **TDM UX** | `scripts/tdm_match_controller.gd` → `scripts/ui/tdm_hud.gd`, `tdm_scoreboard.gd` | The controller owns every TDM number and creates the HUD; the HUD files only draw (score/timer pill, crosshair, health, paint tank, pair card, respawn overlay, Tab scoreboard, result panel) |
+| **Match scene** | `scripts/game.gd` | Builds the arena and local player, then hands an online match to the controller (its offline wave code is unreachable for now) |
+| **Survival UX** | `scripts/hud.gd` | Survival HUD (players-alive pill) and end panel |
+| **TDM UX** | `scripts/tdm_match_controller.gd` → `scripts/ui/tdm_hud.gd`, `tdm_scoreboard.gd` | The controller owns every TDM number and creates the HUD; the HUD files only draw (score/timer pill, kill feed, crosshair, health, paint tank, pair card, death screen, scope, Tab scoreboard, result panel) |
 | **Shared UI** | `scripts/ui/ui_theme.gd`, `scripts/ui/widgets/` | One theme and the HUD widgets used by menu, Survival HUD and TDM HUD. Read-only views of player/controller state |
 | **Presentation** | `scripts/visual/`, `models/generated/` | Combatant/core/station/arena models, effects, surface shader. Visual children only — never collision, never gameplay numbers |
 | **Model sources** | `tools/blender/` | Blender Python scripts that generate `models/generated/*.glb` (`tools/blender/build_all.sh`) |
-| **Networking** | Not implemented | Replace local simulated lobby records and bot actors with session-backed player records/actors later |
+| **Networking** | `scripts/net/network_session.gd`, `scripts/net/remote_player.gd` (Rocklyn) | Lobbies, teams, health, scores, eliminations, respawns (server); other players' synced bodies |
+| **Online match** | `scripts/tdm_match_controller.gd` | Both online modes: turns network events into actors and HUD updates; spectating and the picked gun while dead; pause menu |
+| **Loadout data** | `scripts/weapons.gd` | The five guns' numbers and effects |
+| **Pause / death screen** | `scripts/ui/pause_menu.gd`, `scripts/ui/death_screen.gd`, `scripts/spectator_camera.gd` | Draw and report clicks; the controller decides |
 
-The offline TDM controller is the current authority for TDM-only match state.
-Do not route Survival through that controller. A future online session should
-replace the local lobby population and authority layer, while keeping the menu
-and scoreboard data contracts generic.
+The dedicated server is the authority for match state. The match controller
+only mirrors it; the HUD files only draw.
 
 ## Snitch mechanics handoff (implementation stub)
 
@@ -205,33 +232,21 @@ whether the mechanic is enabled in both modes or Survival only.
 
 ## Testing
 
-The game can be driven without a human at the keyboard:
-
-```
-GODOT="C:/Users/jlion/Downloads/Godot_v4.7.2-stable_win64.exe/Godot_v4.7.2-stable_win64_console.exe"
-"$GODOT" --headless --path . res://scenes/match.tscn --quit-after 18000 -- --autoplay
-```
-
-The main scene is the menu, so the command names `res://scenes/match.tscn` to
-start Survival directly (without it, the run just sits on the menu).
-
-`tools/autoplay.gd` fakes a player — aims, burst-fires, strafes, grabs cores —
-and prints a trace of every wave, kill and inheritance. It is only created when
-that flag is passed. Use `--verbose` for the logging without the bot.
-
-The bot is deliberately mediocre and dies around wave 3–4 of 6. That is the
-tuning target, not a bug. (Since the arena grew, an enemy can occasionally get
-pinned against the centre platform or in the south lane and stall a wave; that
-is pre-existing enemy steering, not a regression.)
-
-More tools in `tools/tests/` (run with `--script res://tools/tests/<name>.gd`):
+Matches are online-only now, so most testing runs a **local copy of the
+server** plus test clients on this computer (never the live server):
 
 | Tool | What it checks |
 | --- | --- |
-| `survival_checklist.gd` | The Survival regression list as PASS/FAIL, through all six waves (headless) |
-| `tdm_checklist.gd` | The TDM regression list as PASS/FAIL, entered through the real menu (headless, ~75 s) |
-| `tdm_probe.gd` | A 2×10 TDM match with the autoplay bot, printing scores and K/D/A (`--shorten=N`, `--tab`) |
-| `menu_flow_probe.gd` | PLAY → TDM / Survival through the menu; reports which HUD exists |
-| `perf_probe.gd` | TDM frame rate, draw calls, physics time and hitches (windowed or headless) |
-| `screenshots.gd` | PNGs of every menu page, both HUDs, scoreboard, result, a model showcase and arena views (windowed; `--rendering-method gl_compatibility` for the web renderer) |
+| `tools/tests/run_online_checklist.sh` | Starts a local server and three clients (`online_checklist.gd`): menu → lobby → TDM match, shooting, scores, 10 s respawns, the death screen, spectating (third/first person), loadout picks, other players seeing your new gun, the pause menu, LEAVE MATCH. `MODE=survival` runs the Survival version; `WINDOWED=host SHOTS=<dir>` saves screenshots |
+| `weapons_checklist.gd` | All five guns against a practice dummy, no server: damage, pellets, zoom, overheat, arc, splash, range |
+| `parse_all.gd` | Compiles every script with the autoloads loaded (`--check-only` alone wrongly reports `NetworkSession` as missing) |
 | `model_viewer.gd` | The generated models under in-game lighting (windowed) |
+
+Run the `.gd` tools with
+`godot --headless --path . --script res://tools/tests/<name>.gd`.
+
+The older tools (`survival_checklist.gd`, `tdm_checklist.gd`, `tdm_probe.gd`,
+`menu_flow_probe.gd`, `perf_probe.gd`, `screenshots.gd`, and
+`tools/autoplay.gd`) drive the OFFLINE Survival waves and bot TDM, which the
+game no longer reaches since `main` went online-only. They are kept until the
+team decides whether those offline modes come back.

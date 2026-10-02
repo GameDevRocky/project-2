@@ -15,13 +15,22 @@ extends CharacterBody3D
 ##
 ## HOW INHERITANCE LANDS HERE
 ## This script keeps two sets of numbers. The BASE numbers (base_speed,
-## base_damage...) never change - they are the tuning knobs for the whole game.
+## base_jump_velocity... and the gun's row in weapons.gd) never change - they
+## are the tuning knobs for the whole game.
 ## The LIVE numbers (_speed, _damage...) are recalculated from the base numbers
 ## times the current pair's multipliers every time a pair is inherited, inside
 ## _apply_pair(). Nothing else in the file ever touches a multiplier. That means
 ## adding a new ability later is a change in traits.gd plus one line here, and
 ## it is impossible for a stale buff to linger after a swap - the live numbers
 ## are rebuilt from scratch, not adjusted.
+##
+## THE GUN
+## Which gun you carry is `weapon_index` into scripts/weapons.gd (Brush Rifle,
+## Fine Liner, Prism Beam, Splat Bucket, Blob Lobber). The gun's own numbers -
+## damage, fire interval, tank size, refill - come from that table, and the
+## pair multiplies them in _apply_pair() exactly as it multiplied the old
+## single gun's numbers. The Brush Rifle row holds the values that used to be
+## the base_damage / base_fire_interval / base_max_ammo... exports here.
 
 const Traits = preload("res://scripts/traits.gd")
 const Projectile = preload("res://scripts/projectile.gd")
@@ -30,6 +39,7 @@ const PaintKit = preload("res://scripts/visual/paint_kit.gd")
 const PaintFx = preload("res://scripts/visual/paint_fx.gd")
 const ShaderWarmup = preload("res://scripts/visual/shader_warmup.gd")
 const GunSkins = preload("res://scripts/visual/gun_skins.gd")
+const Weapons = preload("res://scripts/weapons.gd")
 
 
 # --- Signals ----------------------------------------------------------------
@@ -56,6 +66,12 @@ signal pair_inherited(pair: Dictionary)
 ## projectile.gd exactly as before; this just reports it.
 signal hit_confirmed
 
+## Fired when a different gun is equipped (TDM loadouts), for the HUD.
+signal weapon_changed(weapon: Dictionary)
+
+## Fired when you start or stop zooming (Fine Liner), for the scope overlay.
+signal zoom_changed(zoomed: bool)
+
 
 # --- Base tuning numbers ----------------------------------------------------
 # @export puts these in the Godot editor's Inspector panel, so they can be
@@ -76,25 +92,10 @@ signal hit_confirmed
 ## floaty and slow to come down from. 20 gives a crisp, snappy arc.
 @export var gravity: float = 20.0
 
-## Seconds between shots before any pair multiplier. Smaller = faster gun.
-@export var base_fire_interval: float = 0.28
-
-## Health removed from an enemy by one direct glob, before multipliers.
-@export var base_damage: float = 22.0
-
-## How much paint the reservoir holds. One shot costs one unit.
-@export var base_max_ammo: float = 30.0
-
-## Paint refilled per second, once the refill delay below has passed.
-@export var base_ammo_regen: float = 11.0
-
-## Seconds after your last shot before paint starts refilling. This is what
-## stops the gun being a bottomless hose: hold the trigger and you run dry, and
-## you have to break contact for a moment to get going again.
-@export var ammo_regen_delay: float = 0.6
-
-## How fast your globs travel, in metres per second.
-@export var projectile_speed: float = 90.0
+# The gun's numbers (damage, fire interval, tank size, refill rate and delay,
+# shot speed) live in scripts/weapons.gd, one row per gun. The refill delay is
+# what stops a gun being a bottomless hose: hold the trigger and you run dry,
+# and you have to break contact for a moment to get going again.
 
 ## How far the mouse turns you. Radians of turn per pixel of mouse movement.
 @export var mouse_sensitivity: float = 0.0022
@@ -112,6 +113,8 @@ var _splash_radius: float
 var _splash_mult: float
 var _regen: float
 var _regen_delay: float
+var _ammo_delay: float
+var _projectile_speed: float
 
 
 # --- Live state -------------------------------------------------------------
@@ -128,7 +131,7 @@ var pair: Dictionary = {}
 ## Counts down to zero; you may fire when it reaches zero.
 var _fire_cooldown: float = 0.0
 
-## Seconds since the last shot, compared against ammo_regen_delay.
+## Seconds since the last shot, compared against the gun's refill delay.
 var _since_fired: float = 999.0
 
 ## Seconds since last taking damage, compared against the Ghost pair's delay.
@@ -136,6 +139,26 @@ var _since_hurt: float = 999.0
 
 ## Set true on death so input and shooting stop immediately.
 var _dead: bool = false
+
+## Which gun you carry: an index into scripts/weapons.gd. Set it before the
+## player enters the scene, or call set_weapon() later (TDM respawns).
+var weapon_index: int = Weapons.BRUSH_RIFLE
+## That gun's row from the table.
+var _weapon: Dictionary = {}
+
+## Prism Beam only: true after the charge ran dry, until it is full again.
+var _overheated: bool = false
+
+## Fine Liner only: true while right mouse is held to look down the scope.
+var _zoomed: bool = false
+
+## Counts shots, so the Prism Beam can step through the rainbow.
+var _shot_count: int = 0
+
+## True while the pause menu is open. Online matches cannot really stop, so
+## the world carries on; this just stops YOUR inputs - no looking, moving or
+## shooting - until you resume.
+var _paused: bool = false
 
 ## Whether the game currently considers the mouse grabbed.
 ##
@@ -153,6 +176,8 @@ var _mouse_captured: bool = false
 # --- Nodes built in _ready() ------------------------------------------------
 var _camera: Camera3D
 var _view_model: Node3D
+## The gun model inside _view_model. Swapped when a new gun is equipped.
+var _gun: Node3D
 var _muzzle: MeshInstance3D
 
 ## Parts of the Paint Blaster model (models/generated/paint_blaster.glb) that
@@ -168,6 +193,10 @@ var _muzzle_puff: CPUParticles3D
 ## original box gun; the Paint Blaster model is built around it.
 const MUZZLE_POINT := Vector3(0.0, 0.0, -0.36)
 const VIEW_GUN_SCALE := 1.15
+
+## The normal field of view (the GDD's wide 105 degrees). The Fine Liner's
+## scope narrows it while you hold right mouse.
+const BASE_FOV := 105.0
 
 ## Where the view-model sits when you are perfectly still. Sway and bob are
 ## always applied as an offset from this, so the gun can never drift away from
@@ -191,6 +220,7 @@ func _ready() -> void:
 	if not tdm_team.is_empty():
 		add_to_group("tdm_combatants")
 
+	_weapon = Weapons.get_weapon(weapon_index)
 	_build_body()
 	_build_camera()
 	_build_view_model()
@@ -249,7 +279,7 @@ func _build_camera() -> void:
 	# The GDD asks for a wide 105 degree field of view. Wide FOV shows more of
 	# the arena at once and makes movement feel faster, at the cost of some
 	# distortion at the screen edges.
-	_camera.fov = 105.0
+	_camera.fov = BASE_FOV
 	# current = true makes this the camera the game actually renders from.
 	_camera.current = true
 	add_child(_camera)
@@ -268,51 +298,82 @@ func _build_view_model() -> void:
 	_view_model = Node3D.new()
 	_view_model.position = _view_model_home
 	_camera.add_child(_view_model)
-
-	var blaster := PaintKit.instance("paint_blaster")
-	if blaster == null:
-		_build_box_gun()
-	else:
-		# Drawn 1.15x bigger so it reads as a chunky tool in first person. The
-		# scaling is done AROUND the muzzle point, so the Muzzle node (and so
-		# the glob spawn point) stays exactly at (0, 0, -0.36).
-		blaster.scale = Vector3.ONE * VIEW_GUN_SCALE
-		blaster.position = MUZZLE_POINT * (1.0 - VIEW_GUN_SCALE)
-		_view_model.add_child(blaster)
-		# The first-person gun must not throw a shadow onto the floor in front
-		# of you - it is not really there in the world.
-		PaintKit.set_shadows(blaster, false)
-		_muzzle = PaintKit.part(blaster, "Muzzle") as MeshInstance3D
-		_skin_band = PaintKit.part(blaster, "SkinBand") as MeshInstance3D
-		_gun_fill = PaintKit.part(blaster, "Fill")
-		_gun_needle = PaintKit.part(blaster, "Needle")
-		_gun_regulator = PaintKit.part(blaster, "Regulator")
-		# The bristles, the paint in the tank and the drips all show the pair
-		# colour. They share ONE material, which _apply_pair() repaints, so the
-		# existing "repaint the muzzle" code colours all three at once.
-		var pair_mat := StandardMaterial3D.new()
-		pair_mat.roughness = 0.3
-		pair_mat.emission_enabled = true
-		pair_mat.emission_energy_multiplier = 0.5
-		_muzzle.material_override = pair_mat
-		for part_name in ["Fill", "PaintDrips"]:
-			var painted := PaintKit.part(blaster, part_name) as GeometryInstance3D
-			if painted != null:
-				painted.material_override = pair_mat
-		# The muzzle puff rides on the bristles (local_coords), so it stays
-		# with the gun as you turn instead of hanging in the air behind you.
-		_muzzle_puff = PaintFx.make(Color.WHITE, 6, 1.6, 0.3, 0.16)
-		_muzzle_puff.local_coords = true
-		_muzzle_puff.direction = Vector3.FORWARD
-		_muzzle_puff.spread = 28.0
-		_muzzle_puff.gravity = Vector3.ZERO
-		_muzzle.add_child(_muzzle_puff)
-	_apply_menu_customization()
+	_build_gun()
 	# Draw every effect material once while the match loads (see the script),
 	# so the web build does not freeze at the first hit of the match.
 	var warmup := Node3D.new()
 	warmup.set_script(ShaderWarmup)
 	_camera.add_child(warmup)
+
+
+## Builds the model of the gun you carry inside the view-model, replacing any
+## previous one. Each gun model (models/generated/) has a `Muzzle` part whose
+## origin is where shots leave it, and a `Fill` part showing the paint left.
+func _build_gun() -> void:
+	if _gun != null:
+		_gun.queue_free()
+	_gun = null
+	_muzzle = null
+	_skin_band = null
+	_gun_fill = null
+	_gun_needle = null
+	_gun_regulator = null
+	_muzzle_puff = null
+
+	var model := PaintKit.instance(str(_weapon.get("model", "paint_blaster")))
+	if model == null:
+		model = PaintKit.instance("paint_blaster")
+	if model == null:
+		_build_box_gun()
+		_apply_menu_customization()
+		return
+	_gun = model
+	# Drawn 1.15x bigger so it reads as a chunky tool in first person. The
+	# Paint Blaster is scaled AROUND its muzzle point, so its Muzzle node (and
+	# so the glob spawn point) stays exactly at (0, 0, -0.36).
+	model.scale = Vector3.ONE * VIEW_GUN_SCALE
+	if model.scene_file_path.get_file() == "paint_blaster.glb":
+		model.position = MUZZLE_POINT * (1.0 - VIEW_GUN_SCALE)
+	else:
+		model.position = _weapon.get("view_offset", Vector3.ZERO)
+	_view_model.add_child(model)
+	# The first-person gun must not throw a shadow onto the floor in front
+	# of you - it is not really there in the world.
+	PaintKit.set_shadows(model, false)
+	_muzzle = PaintKit.part(model, "Muzzle") as MeshInstance3D
+	_skin_band = PaintKit.part(model, "SkinBand") as MeshInstance3D
+	_gun_fill = PaintKit.part(model, "Fill")
+	_gun_needle = PaintKit.part(model, "Needle")
+	_gun_regulator = PaintKit.part(model, "Regulator")
+	if _muzzle == null:
+		# A model without a Muzzle part: fire from the old muzzle point.
+		_muzzle = MeshInstance3D.new()
+		_muzzle.position = MUZZLE_POINT
+		_view_model.add_child(_muzzle)
+	# The bristles (or nib, prism, bell...), the paint in the tank and the
+	# drips all show the pair colour. They share ONE material, which
+	# _apply_pair() repaints, so the existing "repaint the muzzle" code colours
+	# all three at once.
+	var pair_mat := StandardMaterial3D.new()
+	pair_mat.roughness = 0.3
+	pair_mat.emission_enabled = true
+	pair_mat.emission_energy_multiplier = 0.5
+	_muzzle.material_override = pair_mat
+	for part_name in ["Fill", "PaintDrips"]:
+		var painted := PaintKit.part(model, part_name) as GeometryInstance3D
+		if painted != null:
+			painted.material_override = pair_mat
+	# The muzzle puff rides on the muzzle (local_coords), so it stays with the
+	# gun as you turn instead of hanging in the air behind you.
+	_muzzle_puff = PaintFx.make(Color.WHITE, 6, 1.6, 0.3, 0.16)
+	_muzzle_puff.local_coords = true
+	_muzzle_puff.direction = Vector3.FORWARD
+	_muzzle_puff.spread = 28.0
+	_muzzle_puff.gravity = Vector3.ZERO
+	_muzzle.add_child(_muzzle_puff)
+	_apply_menu_customization()
+	if not pair.is_empty():
+		_paint_muzzle()
 
 
 ## The original prototype gun: three boxes and a bristle cube. Only used if the
@@ -340,10 +401,10 @@ func _apply_menu_customization() -> void:
 	if customization.is_empty():
 		return
 	var gun_skin_index := int(customization.get("gun_skin", customization.get("GUN SKINS", 0)))
-	# The Paint Blaster model: the gun skin restyles the whole gun (body, trim,
-	# band, grip). The bristles and tank keep showing your pair colour.
-	if _gun_fill != null:
-		GunSkins.apply(_view_model, gun_skin_index, false)
+	# A gun model: the gun skin restyles the whole gun (body, trim, band,
+	# grip). The bristles and tank keep showing your pair colour.
+	if _gun != null:
+		GunSkins.apply(_gun, gun_skin_index, false)
 		return
 	# Fallback box gun: only its band takes the skin colour.
 	var palette := [Color("#FF6FAE"), Color("#63D9C7"), Color("#54C9E8"), Color("#F5C45E"), Color("#A78BFA"), Color("#F5F4F0"), Color("#FF867C"), Color("#79C991"), Color("#70BCEB"), Color("#C18B67")]
@@ -389,19 +450,22 @@ func _make_box(box_size: Vector3, at: Vector3, box_color: Color) -> MeshInstance
 ## discrete events - reading it on a timer would drop movement on slow frames
 ## and make the aim feel like it is skipping.
 func _unhandled_input(event: InputEvent) -> void:
-	if _dead:
+	if _dead or _paused:
 		return
 
 	if event is InputEventMouseMotion and _mouse_captured:
 		var motion: InputEventMouseMotion = event
+		# Looking through the Fine Liner's scope turns slower, in step with the
+		# zoom, so aiming feels the same at any magnification.
+		var turn_scale: float = _camera.fov / BASE_FOV
 
 		# Turning left/right rotates the whole BODY, so that "forward" for
 		# movement always means the way you are facing.
-		rotate_y(-motion.relative.x * mouse_sensitivity)
+		rotate_y(-motion.relative.x * mouse_sensitivity * turn_scale)
 
 		# Looking up/down rotates only the CAMERA. If it rotated the body the
 		# player would tip over and walk into the floor.
-		_camera.rotate_x(-motion.relative.y * mouse_sensitivity)
+		_camera.rotate_x(-motion.relative.y * mouse_sensitivity * turn_scale)
 		# Clamp the pitch to just under straight up and straight down. Without
 		# this you could roll the camera over backwards and the view would
 		# flip upside down.
@@ -423,7 +487,9 @@ func _physics_process(delta: float) -> void:
 
 	_tick_timers(delta)
 	_move(delta)
-	_shoot(delta)
+	if not _paused:
+		_update_zoom(delta)
+		_shoot(delta)
 	_regenerate(delta)
 	_animate_view_model(delta)
 
@@ -439,13 +505,16 @@ func _move(delta: float) -> void:
 	if not is_on_floor():
 		velocity.y -= gravity * delta
 
-	if Input.is_action_just_pressed("jump") and is_on_floor():
+	if Input.is_action_just_pressed("jump") and is_on_floor() and not _paused:
 		velocity.y = _jump_velocity
 
 	# Input.get_vector reads four actions and returns a direction of length at
 	# most 1. Because it normalises, holding W and D together does NOT make you
 	# move faster diagonally, which is a classic bug in hand-rolled movement.
-	var input_dir := Input.get_vector("move_left", "move_right", "move_forward", "move_back")
+	# While paused the keys are ignored, so you come to a stop where you are.
+	var input_dir := Vector2.ZERO
+	if not _paused:
+		input_dir = Input.get_vector("move_left", "move_right", "move_forward", "move_back")
 
 	# That direction is in "screen" terms - x is right, y is forward. Turn it
 	# into a world direction by combining the body's own axes. basis.x is the
@@ -483,30 +552,21 @@ func _shoot(_delta: float) -> void:
 		return
 	if _fire_cooldown > 0.0:
 		return
-	if ammo < 1.0:
+	var cost := float(_weapon.cost)
+	if _overheated:
+		return
+	if ammo < cost:
+		# An energy gun that runs dry overheats: it locks until the charge is
+		# completely full again (see _regenerate). A paint gun just waits.
+		if bool(_weapon.overheat):
+			_overheated = true
+			stats_changed.emit()
 		return
 
-	ammo -= 1.0
+	ammo -= cost
 	_fire_cooldown = _fire_interval
 	_since_fired = 0.0
-
-	var glob = Node3D.new()
-	glob.set_script(Projectile)
-	glob.damage = _damage
-	glob.speed = projectile_speed
-	glob.splash_radius = _splash_radius
-	glob.splash_mult = _splash_mult
-	glob.color = pair["color"]
-	# Who to tell when this glob lands a hit (the crosshair hit marker).
-	# Nothing in the damage path reads this.
-	glob.source_player = self
-	if not tdm_team.is_empty():
-		glob.configure_tdm(self, tdm_team)
-
-	# Add the glob to the level, NOT to the player. A child node moves with its
-	# parent, so a glob parented to the player would be dragged along behind you
-	# forever instead of flying away on its own.
-	get_parent().add_child(glob)
+	_shot_count += 1
 
 	# Fire FROM the brush head, but TOWARD wherever the crosshair is pointing.
 	#
@@ -525,20 +585,59 @@ func _shoot(_delta: float) -> void:
 	var aim: Vector3 = _aim_point()
 	var shot_origin := _muzzle.global_position
 	var shot_direction := (aim - shot_origin).normalized()
-	glob.setup(shot_origin, shot_direction, true)
+	# Spread: a random wobble inside a small cone. The Fine Liner is perfectly
+	# accurate only while zoomed.
+	var pellets := int(_weapon.pellets)
+	var wobble := float(_weapon.zoom_spread) if _zoomed else float(_weapon.spread)
+	if pellets == 1:
+		shot_direction = Weapons.spread_direction(shot_direction, wobble)
+	var shot_color: Color = pair["color"]
+	if bool(_weapon.rainbow):
+		shot_color = Weapons.rainbow_color(_shot_count)
+	for i in pellets:
+		# The Splat Bucket throws several droplets at once, each with its own
+		# wobble; every other gun fires exactly one shot along shot_direction.
+		var direction := shot_direction if pellets == 1 else Weapons.spread_direction(shot_direction, wobble)
+		_spawn_shot(shot_origin, direction, shot_color)
 	if NetworkSession.is_in_match():
 		NetworkSession.report_shot(shot_origin, shot_direction, {
 			"damage": _damage,
-			"speed": projectile_speed,
+			"speed": _projectile_speed,
 			"splash_radius": _splash_radius,
 			"splash_mult": _splash_mult,
-			"color": pair["color"],
+			"color": shot_color,
+			"weapon": weapon_index,
 		})
 
 	_kick_view_model()
 	if _muzzle_puff != null:
+		_muzzle_puff.color = shot_color
 		_muzzle_puff.restart()
 	stats_changed.emit()
+
+
+## Creates one glob and sends it on its way.
+func _spawn_shot(origin: Vector3, direction: Vector3, shot_color: Color) -> void:
+	var glob = Node3D.new()
+	glob.set_script(Projectile)
+	glob.damage = _damage
+	glob.speed = _projectile_speed
+	glob.splash_radius = _splash_radius
+	glob.splash_mult = _splash_mult
+	glob.color = shot_color
+	# Range, arc and bullet size for this gun.
+	Weapons.apply_to_shot(glob, _weapon)
+	# Who to tell when this glob lands a hit (the crosshair hit marker).
+	# Nothing in the damage path reads this.
+	glob.source_player = self
+	if not tdm_team.is_empty():
+		glob.configure_tdm(self, tdm_team)
+
+	# Add the glob to the level, NOT to the player. A child node moves with its
+	# parent, so a glob parented to the player would be dragged along behind you
+	# forever instead of flying away on its own.
+	get_parent().add_child(glob)
+	glob.setup(origin, direction, true)
 
 
 ## Finds the point in the world the crosshair is currently over, by casting a
@@ -587,8 +686,12 @@ func _aim_point() -> Vector3:
 
 ## Refills the paint reservoir and, if the Ghost pair is inherited, health.
 func _regenerate(delta: float) -> void:
-	if _since_fired >= ammo_regen_delay and ammo < _max_ammo:
+	if _since_fired >= _ammo_delay and ammo < _max_ammo:
 		ammo = minf(_max_ammo, ammo + _ammo_regen * delta)
+		stats_changed.emit()
+	# An overheated Prism Beam unlocks only once the charge is full again.
+	if _overheated and ammo >= _max_ammo:
+		_overheated = false
 		stats_changed.emit()
 
 	# _regen is 0 for every pair except Ghost, so this costs nothing to leave
@@ -640,7 +743,7 @@ func _animate_gun_parts(delta: float) -> void:
 	_gun_fill.scale.z = lerpf(_gun_fill.scale.z, maxf(fraction, 0.02), smoothing)
 	if _gun_needle != null:
 		_gun_needle.rotation.x = lerp_angle(_gun_needle.rotation.x, lerpf(1.1, -1.1, fraction), smoothing)
-	if _gun_regulator != null and _since_fired >= ammo_regen_delay and ammo < _max_ammo:
+	if _gun_regulator != null and _since_fired >= _ammo_delay and ammo < _max_ammo:
 		_gun_regulator.rotate_z(delta * 7.0)
 
 
@@ -692,30 +795,113 @@ func _apply_pair(id: String) -> void:
 	# A faster fire RATE means a shorter INTERVAL between shots, so the
 	# multiplier divides here rather than multiplying. Getting this backwards
 	# would silently invert every gun-speed ability in the game.
-	_fire_interval = base_fire_interval / float(pair["fire_rate_mult"])
+	_fire_interval = float(_weapon.interval) / float(pair["fire_rate_mult"])
 
-	_damage = base_damage * float(pair["damage_mult"])
+	_damage = float(_weapon.damage) * float(pair["damage_mult"])
 	_speed = base_speed * float(pair["move_mult"])
 	_jump_velocity = base_jump_velocity * float(pair["jump_mult"])
 	_taken_mult = float(pair["taken_mult"])
-	_splash_radius = float(pair["splash_radius"])
-	_splash_mult = float(pair["splash_mult"])
+	# Splash comes from the pair (Splatter Rounds) or the gun (the Blob
+	# Lobber's burst) - whichever is bigger, never both added together.
+	_splash_radius = maxf(float(pair["splash_radius"]), float(_weapon.splash_radius))
+	_splash_mult = maxf(float(pair["splash_mult"]), float(_weapon.splash_mult))
 	_regen = float(pair["regen"])
 	_regen_delay = float(pair["regen_delay"])
-	_max_ammo = base_max_ammo * float(pair["ammo_mult"])
-	_ammo_regen = base_ammo_regen * float(pair["ammo_regen_mult"])
+	_max_ammo = float(_weapon.ammo) * float(pair["ammo_mult"])
+	_ammo_regen = float(_weapon.regen) * float(pair["ammo_regen_mult"])
+	_ammo_delay = float(_weapon.regen_delay)
+	_projectile_speed = float(_weapon.speed)
 
 	# Never leave the reservoir holding more than it can now carry - inheriting
 	# Faded Pigment must actually cut you down to the smaller tank.
 	ammo = minf(ammo, _max_ammo)
 
-	# Repaint the brush head to the new pair's colour.
+	_paint_muzzle()
+
+
+## Repaints the brush head (and the paint in the tank) to the pair's colour.
+func _paint_muzzle() -> void:
 	if _muzzle != null:
 		var mat = _muzzle.material_override
-		mat.albedo_color = pair["color"]
-		mat.emission = pair["color"]
+		if mat is StandardMaterial3D:
+			mat.albedo_color = pair["color"]
+			mat.emission = pair["color"]
 	if _muzzle_puff != null:
 		_muzzle_puff.color = pair["color"]
+
+
+# ============================================================================
+# THE GUN
+# ============================================================================
+
+## Equips a different gun (TDM: the loadout picked while waiting to respawn).
+## The tank starts full, and every live number is rebuilt from the new gun
+## and the pair you carry.
+func set_weapon(index: int) -> void:
+	weapon_index = posmod(index, Weapons.count())
+	_weapon = Weapons.get_weapon(weapon_index)
+	_overheated = false
+	_set_zoom(false)
+	_apply_pair(pair_id)
+	ammo = _max_ammo
+	_fire_cooldown = 0.0
+	if _view_model != null:
+		_build_gun()
+	weapon_changed.emit(_weapon)
+	stats_changed.emit()
+
+
+func get_weapon() -> Dictionary:
+	return _weapon
+
+
+func is_overheated() -> bool:
+	return _overheated
+
+
+func is_zoomed() -> bool:
+	return _zoomed
+
+
+## Fine Liner only: hold right mouse to zoom. Eases the field of view toward
+## the scope's and back, so the zoom slides rather than snaps.
+func _update_zoom(delta: float) -> void:
+	var can_zoom := float(_weapon.zoom_fov) > 0.0 and _mouse_captured
+	_set_zoom(can_zoom and InputMap.has_action("aim") and Input.is_action_pressed("aim"))
+	var target := float(_weapon.zoom_fov) if _zoomed else BASE_FOV
+	_camera.fov = lerpf(_camera.fov, target, clampf(delta * 14.0, 0.0, 1.0))
+
+
+func _set_zoom(on: bool) -> void:
+	if on == _zoomed:
+		return
+	_zoomed = on
+	# The scope overlay takes over the screen, so hide the gun while zoomed.
+	if _view_model != null:
+		_view_model.visible = not on
+	if not on and _camera != null:
+		_camera.fov = BASE_FOV if _dead or _paused else _camera.fov
+	zoom_changed.emit(on)
+
+
+# ============================================================================
+# PAUSE
+# ============================================================================
+
+## Called by the pause menu (scripts/ui/pause_menu.gd). Frees the mouse and
+## ignores your inputs while paused; recaptures the mouse on resume.
+func set_paused(on: bool) -> void:
+	_paused = on
+	if on:
+		_set_zoom(false)
+		Input.action_release("fire")
+		_set_mouse_captured(false)
+	elif not _dead:
+		_set_mouse_captured(true)
+
+
+func is_paused() -> bool:
+	return _paused
 
 
 # ============================================================================
@@ -740,6 +926,7 @@ func take_damage(amount: float, attacker = null) -> void:
 	if health <= 0.0:
 		health = 0.0
 		_dead = true
+		_set_zoom(false)
 		_set_mouse_captured(false)
 		died.emit()
 
@@ -755,8 +942,14 @@ func tdm_respawn(at: Vector3) -> void:
 	health = max_health
 	global_position = at
 	velocity = Vector3.ZERO
+	ammo = _max_ammo
+	_overheated = false
+	_camera.fov = BASE_FOV
+	_camera.current = true
 	stats_changed.emit()
-	_set_mouse_captured(true)
+	# Stay un-captured if the pause menu is open; resuming captures it.
+	if not _paused:
+		_set_mouse_captured(true)
 
 
 func apply_network_health(next_health: float) -> void:
@@ -768,6 +961,7 @@ func apply_network_health(next_health: float) -> void:
 	stats_changed.emit()
 	if health <= 0.0 and not _dead:
 		_dead = true
+		_set_zoom(false)
 		_set_mouse_captured(false)
 		died.emit()
 

@@ -61,6 +61,16 @@ var source_player = null
 var _hit_landed := false
 var can_deal_damage := true
 
+## How the shot looks, set per gun from scripts/weapons.gd before it is added
+## to the scene. The defaults are the Brush Rifle's tracer.
+var bullet_radius: float = 0.06
+var trail_length: float = 1.15
+var trail_radius: float = 0.022
+
+## Downward pull in metres per second per second. 0 (every gun except the
+## Blob Lobber) means the shot flies dead straight, exactly as before.
+var gravity: float = 0.0
+
 
 # --- Physics layer numbers, named so the code reads clearly -----------------
 # In Godot every physics body sits on one or more numbered "layers", and each
@@ -70,9 +80,6 @@ var can_deal_damage := true
 const LAYER_WORLD := 1
 const LAYER_PLAYER := 2
 const LAYER_ENEMY := 4
-const BULLET_RADIUS := 0.06
-const TRAIL_LENGTH := 1.15
-const TRAIL_RADIUS := 0.022
 
 
 # Where the glob was at the end of the previous frame. The ray each frame is
@@ -82,6 +89,13 @@ var _previous_position: Vector3
 # Set true the instant we hit something, so that a glob cannot somehow register
 # two impacts in the same frame and deal double damage.
 var _spent: bool = false
+
+# The trail, and how far this shot has flown. The trail grows from nothing to
+# its full length over its first `trail_length` metres, so a long trail (the
+# Fine Liner's is 4 m) never pokes out behind the gun - through it and past
+# the camera - in the first frames after firing.
+var _trail: MeshInstance3D
+var _travelled: float = 0.0
 
 
 ## Called by the player or an enemy right after spawning the glob, to hand it
@@ -130,8 +144,8 @@ func _ready() -> void:
 	var mesh_node := MeshInstance3D.new()
 	mesh_node.name = "Bullet"
 	var sphere := SphereMesh.new()
-	sphere.radius = BULLET_RADIUS
-	sphere.height = BULLET_RADIUS * 2.0
+	sphere.radius = bullet_radius
+	sphere.height = bullet_radius * 2.0
 	# radial_segments/rings control how many triangles the ball is made of.
 	# Low numbers keep it faceted, which suits the GDD's "low-poly" direction
 	# and costs almost nothing to draw even with dozens on screen.
@@ -153,15 +167,16 @@ func _build_trail() -> void:
 	var trail := MeshInstance3D.new()
 	trail.name = "Trail"
 	var trail_mesh := CylinderMesh.new()
-	trail_mesh.top_radius = TRAIL_RADIUS
+	trail_mesh.top_radius = trail_radius
 	trail_mesh.bottom_radius = 0.0
-	trail_mesh.height = TRAIL_LENGTH
+	trail_mesh.height = trail_length
 	trail_mesh.radial_segments = 6
 	trail_mesh.rings = 1
 	trail.mesh = trail_mesh
 	trail.rotation.x = deg_to_rad(90.0)
-	trail.position.z = TRAIL_LENGTH * 0.5
 	trail.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_trail = trail
+	_grow_trail()
 
 	var trail_material := trail_material_for(color)
 	trail.material_override = trail_material
@@ -180,6 +195,16 @@ func _physics_process(delta: float) -> void:
 	if life <= 0.0:
 		queue_free()
 		return
+
+	# A lobbed shot curves: gravity bends its direction down a little every
+	# step, and it keeps pointing along its path so the trail stays behind it.
+	# Straight shots (gravity 0) skip this and move exactly as before.
+	if gravity > 0.0:
+		var velocity := direction * speed + Vector3.DOWN * gravity * delta
+		speed = velocity.length()
+		direction = velocity / maxf(speed, 0.001)
+		var up := Vector3.UP if absf(direction.y) < 0.98 else Vector3.RIGHT
+		look_at(global_position + direction, up)
 
 	var next_position: Vector3 = global_position + direction * speed * delta
 
@@ -215,6 +240,20 @@ func _physics_process(delta: float) -> void:
 
 	_previous_position = global_position
 	global_position = next_position
+	_travelled += speed * delta
+	_grow_trail()
+
+
+## Stretches the trail to the distance flown so far, up to its full length.
+## Scaling the trail node's own Y stretches the cylinder along its length
+## (its Y, laid along +Z by the 90 degree turn), and moving it back by half
+## that keeps its thin end touching the bullet.
+func _grow_trail() -> void:
+	if _trail == null:
+		return
+	var fraction := clampf(_travelled / maxf(trail_length, 0.01), 0.01, 1.0)
+	_trail.scale = Vector3(1.0, fraction, 1.0)
+	_trail.position.z = trail_length * fraction * 0.5
 
 
 ## Runs once, at the moment the glob touches something.

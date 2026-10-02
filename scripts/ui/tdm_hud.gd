@@ -28,6 +28,7 @@ const PaintTankScript = preload("res://scripts/ui/widgets/paint_tank_meter.gd")
 const InheritanceCardScript = preload("res://scripts/ui/widgets/inheritance_card.gd")
 const ScreenFxScript = preload("res://scripts/ui/widgets/screen_fx.gd")
 const ScoreboardScript = preload("res://scripts/ui/tdm_scoreboard.gd")
+const DeathScreenScript = preload("res://scripts/ui/death_screen.gd")
 
 const SAFE_MARGIN := 24.0
 
@@ -48,8 +49,11 @@ var _red_score: Label
 var _blue_score: Label
 var _clock: Label
 var _scoreboard
+## The death screen (scripts/ui/death_screen.gd): countdown, spectate bar and
+## loadout, shown while you wait to respawn.
 var _respawn: Control
-var _respawn_label: Label
+var _bottom_left: Control
+var _scope: Control
 var _feed: VBoxContainer
 var _result: Control
 var _last_ammo: float = -1.0
@@ -96,6 +100,10 @@ func setup(controller, player, team: String) -> void:
 	player.pair_inherited.connect(_on_pair_inherited)
 	if player.has_signal("hit_confirmed"):
 		player.hit_confirmed.connect(_crosshair.show_hit)
+	if player.has_signal("weapon_changed"):
+		player.weapon_changed.connect(_on_weapon_changed)
+		player.zoom_changed.connect(_on_zoom_changed)
+		_on_weapon_changed(player.get_weapon())
 	_on_stats_changed()
 	_pair_card.set_pair(player.pair, str(player.pair_id))
 	refresh_scores()
@@ -205,6 +213,7 @@ func _build_bottom_left() -> void:
 	stack.offset_left = SAFE_MARGIN
 	stack.offset_bottom = -SAFE_MARGIN
 	_root.add_child(stack)
+	_bottom_left = stack
 	_pair_card = InheritanceCardScript.new()
 	stack.add_child(_pair_card)
 	_health = HealthMeterScript.new()
@@ -222,27 +231,44 @@ func _build_bottom_right() -> void:
 
 
 func _build_respawn_overlay() -> void:
-	_respawn = CenterContainer.new()
-	_respawn.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_respawn.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_respawn = DeathScreenScript.new()
 	_respawn.visible = false
 	_root.add_child(_respawn)
-	var panel := PanelContainer.new()
-	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	panel.add_theme_stylebox_override("panel", UITheme.panel(Color(UITheme.team_color(_team), 0.8), 2))
-	_respawn.add_child(panel)
-	var column := VBoxContainer.new()
-	column.alignment = BoxContainer.ALIGNMENT_CENTER
-	panel.add_child(column)
-	var title := Label.new()
-	title.theme_type_variation = &"TitleLabel"
-	title.text = "PAINTED OUT"
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	column.add_child(title)
-	_respawn_label = Label.new()
-	_respawn_label.theme_type_variation = &"BodyLabel"
-	_respawn_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	column.add_child(_respawn_label)
+	# The screen only reports clicks; the controller owns the spectate target
+	# and the picked gun, and does the work.
+	_respawn.weapon_picked.connect(func(index): _controller.pick_weapon(index))
+	_respawn.spectate_step.connect(func(direction): _controller.spectate_step(direction))
+	_respawn.view_toggled.connect(func(): _controller.toggle_spectate_view())
+	_scope = ScopeOverlay.new()
+	_scope.visible = false
+	_root.add_child(_scope)
+	# Keep the scope under the crosshair's hit marker but over the world.
+	_root.move_child(_scope, 1)
+
+
+## The Fine Liner's scope: dark all round a clear circle, with fine cross
+## lines. Drawn with _draw() so it needs no image file and stays sharp at any
+## window size.
+class ScopeOverlay extends Control:
+	func _init() -> void:
+		mouse_filter = Control.MOUSE_FILTER_IGNORE
+		set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+
+	func _draw() -> void:
+		var centre := size * 0.5
+		var radius := size.y * 0.42
+		var shade := Color(0.02, 0.025, 0.045, 0.94)
+		# A ring as thick as the screen is wide covers everything outside the
+		# circle. draw_arc's width is centred on its radius, hence the half.
+		var thickness := size.length()
+		draw_arc(centre, radius + thickness * 0.5, 0.0, TAU, 96, shade, thickness)
+		draw_arc(centre, radius, 0.0, TAU, 96, Color(0.1, 0.11, 0.16), 6.0)
+		var line := Color(0.08, 0.09, 0.13, 0.85)
+		draw_line(centre - Vector2(radius, 0), centre - Vector2(10, 0), line, 2.0)
+		draw_line(centre + Vector2(10, 0), centre + Vector2(radius, 0), line, 2.0)
+		draw_line(centre - Vector2(0, radius), centre - Vector2(0, 10), line, 2.0)
+		draw_line(centre + Vector2(0, 10), centre + Vector2(0, radius), line, 2.0)
+		draw_circle(centre, 2.5, Color(1.0, 0.45, 0.6))
 
 
 ## Eliminations, newest at the bottom, in the top-right corner.
@@ -303,10 +329,24 @@ func _on_stats_changed() -> void:
 	_health.set_values(float(_player.health), float(_player.max_health))
 	_fx.set_health_fraction(float(_player.health) / maxf(float(_player.max_health), 1.0))
 	_paint.set_values(ammo, max_ammo)
-	# A shot costs exactly one paint, so a drop of about one means "just fired".
+	if _player.has_method("is_overheated"):
+		_paint.set_overheated(_player.is_overheated())
+	# Every shot costs at least one unit, so a drop of about one means "just fired".
 	if _last_ammo >= 0.0 and ammo <= _last_ammo - 0.99:
 		_crosshair.pulse()
 	_last_ammo = ammo
+
+
+## A new gun: its name goes over the paint tank.
+func _on_weapon_changed(weapon: Dictionary) -> void:
+	_paint.set_caption(str(weapon.get("name", "PAINT")))
+	_last_ammo = -1.0
+
+
+func _on_zoom_changed(zoomed: bool) -> void:
+	_scope.visible = zoomed
+	if zoomed:
+		_scope.queue_redraw()
 
 
 func _on_pair_inherited(pair: Dictionary) -> void:
@@ -364,10 +404,17 @@ func _process(_delta: float) -> void:
 		return
 	var dead: bool = _player.is_dead()
 	_respawn.visible = dead
-	_crosshair.visible = not dead
+	_crosshair.visible = not dead and not _scope.visible
+	# The loadout cards use the bottom of the screen, where health, the pair
+	# card and the paint tank normally sit.
+	_bottom_left.visible = not dead
+	_paint.visible = not dead
 	if dead:
-		var left: float = float(_controller.local_respawn_time_left())
-		_respawn_label.text = "Respawning in %.1f" % left if left > 0.0 else "Respawning…"
+		_respawn.set_countdown(float(_controller.local_respawn_time_left()))
+		_respawn.set_killer(_controller.killed_by_name, _controller.killed_by_color)
+		_respawn.set_spectating(_controller.spectate_name(), _controller.spectate_color(),
+			_controller.spectate_first_person(), _controller.spectate_choices() > 1)
+		_respawn.set_selected(int(_controller.chosen_weapon), UITheme.team_color(_team))
 
 
 # ============================================================================
@@ -384,6 +431,7 @@ func show_result(winner: String, winner_color: Color, kills: int, deaths: int,
 	_scoreboard_wanted = false
 	_scoreboard.visible = false
 	_respawn.visible = false
+	_scope.visible = false
 	_crosshair.visible = false
 
 	_result = Control.new()
