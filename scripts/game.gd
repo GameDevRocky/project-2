@@ -37,7 +37,7 @@ const PlayerScript = preload("res://scripts/player.gd")
 const EnemyScript = preload("res://scripts/enemy.gd")
 const ArenaScript = preload("res://scripts/arena.gd")
 const HudScript = preload("res://scripts/hud.gd")
-const HealingStationScene = preload("res://scenes/healing_station.tscn")
+const HealingStationScript = preload("res://scripts/healing_station.gd")
 const TDMControllerScript = preload("res://scripts/tdm_match_controller.gd")
 
 
@@ -122,6 +122,7 @@ func _ready() -> void:
 		customization = (profile_customization as Dictionary).duplicate(true)
 	_build_arena()
 	_build_player()
+	_build_healing_station()
 	var controller := Node.new()
 	controller.name = "OnlineMatchController"
 	controller.set_script(TDMControllerScript)
@@ -177,6 +178,11 @@ func _ensure_input_actions() -> void:
 		var click := InputEventMouseButton.new()
 		click.button_index = MOUSE_BUTTON_LEFT
 		InputMap.action_add_event("fire", click)
+	if not InputMap.has_action("toggle_power"):
+		InputMap.add_action("toggle_power")
+		var right_click := InputEventMouseButton.new()
+		right_click.button_index = MOUSE_BUTTON_RIGHT
+		InputMap.action_add_event("toggle_power", right_click)
 
 	# Standard Godot gamepad axes follow the Xbox-style layout on every mapped
 	# controller: left stick moves, right stick looks, right trigger fires, and
@@ -191,6 +197,8 @@ func _ensure_input_actions() -> void:
 	_ensure_joy_axis("look_down", JOY_AXIS_RIGHT_Y, 1.0)
 	_ensure_joy_axis("fire", JOY_AXIS_TRIGGER_RIGHT, 1.0)
 	_ensure_joy_button("jump", JOY_BUTTON_A)
+	_ensure_joy_button("toggle_power", JOY_BUTTON_LEFT_SHOULDER)
+	_ensure_joy_button("interact", JOY_BUTTON_X)
 
 
 func _ensure_joy_axis(action: StringName, axis: int, axis_value: float) -> void:
@@ -247,12 +255,13 @@ func _build_healing_station() -> void:
 	var station_positions := [
 		Vector3(-28.0, 0.0, -28.0), # NW small building, ground floor.
 		Vector3(33.0, 0.0, -31.0), # NE building, east room.
-		Vector3(-29.0, 3.4, 23.0), # SW building, raised floor.
-		Vector3(5.0, -2.4, 29.0), # Recessed southern route.
 	]
 	for index in station_positions.size():
-		var station := HealingStationScene.instantiate()
+		var station := Node3D.new()
+		station.set_script(HealingStationScript)
 		station.name = "HealingStation%d" % (index + 1)
+		station.station_id = index
+		station.require_power_to_trade = true
 		add_child(station)
 		station.global_position = station_positions[index]
 

@@ -6,6 +6,7 @@ extends Node
 
 const Projectile = preload("res://scripts/projectile.gd")
 const RemotePlayer = preload("res://scripts/net/remote_player.gd")
+const FlyingPowerBall = preload("res://scripts/flying_power_ball.gd")
 const HudScript = preload("res://scripts/hud.gd")
 const MATCH_SECONDS := 600.0
 const INTERMISSION_SECONDS := 10.0
@@ -30,6 +31,7 @@ var local_player
 var game_mode := "TEAM_DEATH_MATCH"
 var players: Array[Dictionary] = []
 var actors: Dictionary = {}
+var snitch_actors: Dictionary = {}
 var scores := {"RED": 0, "BLUE": 0}
 var stats: Dictionary = {}
 var alive: Dictionary = {}
@@ -58,6 +60,8 @@ func start_match(owner_game, local_actor, lobby_records: Array[Dictionary], _tea
 	local_player.tdm_team = _combat_team(local_record)
 	local_player.add_to_group("tdm_combatants")
 	local_player.global_position = _spawn_for(local_record)
+	local_player.apply_network_vitals(float(local_record.get("health", 100.0)), float(local_record.get("shield", 100.0)))
+	local_player.set_network_power(str(local_record.get("power", "")), bool(local_record.get("invisible", false)))
 	actors[local_id] = local_player
 
 	for record in players:
@@ -75,7 +79,9 @@ func start_match(owner_game, local_actor, lobby_records: Array[Dictionary], _tea
 
 	NetworkSession.remote_transform_received.connect(_on_remote_transform)
 	NetworkSession.remote_shot_received.connect(_on_remote_shot)
-	NetworkSession.health_changed.connect(_on_health_changed)
+	NetworkSession.vitals_changed.connect(_on_vitals_changed)
+	NetworkSession.power_changed.connect(_on_power_changed)
+	NetworkSession.snitch_snapshot_changed.connect(_on_snitch_snapshot)
 	NetworkSession.player_eliminated.connect(_on_player_eliminated)
 	NetworkSession.player_respawned.connect(_on_player_respawned)
 	NetworkSession.player_left_match.connect(_on_player_left_match)
@@ -85,6 +91,7 @@ func start_match(owner_game, local_actor, lobby_records: Array[Dictionary], _tea
 	NetworkSession.match_started.connect(_on_next_round_started)
 	NetworkSession.server_left.connect(_on_server_left)
 	_build_hud()
+	_on_snitch_snapshot(NetworkSession.snitches)
 
 
 func _process(delta: float) -> void:
@@ -125,6 +132,8 @@ func _on_remote_shot(peer_id: int, origin: Vector3, direction: Vector3, shot_dat
 	glob.speed = float(shot_data.get("speed", 90.0))
 	glob.splash_radius = float(shot_data.get("splash_radius", 0.0))
 	glob.splash_mult = float(shot_data.get("splash_mult", 0.0))
+	glob.projectile_kind = str(shot_data.get("projectile_kind", "bullet"))
+	glob.allow_self_damage = glob.projectile_kind == "rocket"
 	glob.color = shot_data.get("color", Color.WHITE)
 	glob.can_deal_damage = false
 	glob.configure_tdm(shooter, str(shooter.get("tdm_team")))
@@ -132,14 +141,54 @@ func _on_remote_shot(peer_id: int, origin: Vector3, direction: Vector3, shot_dat
 	glob.setup(origin, direction, true)
 
 
-func _on_health_changed(peer_id: int, next_health: float) -> void:
+func _on_vitals_changed(peer_id: int, next_health: float, next_shield: float) -> void:
 	var actor = actors.get(peer_id)
 	if not is_instance_valid(actor):
 		return
 	if peer_id == NetworkSession.local_peer_id():
-		local_player.apply_network_health(next_health)
+		local_player.apply_network_vitals(next_health, next_shield)
 	else:
-		actor.set_network_health(next_health)
+		actor.set_network_vitals(next_health, next_shield)
+
+
+func _on_power_changed(peer_id: int, power_id: String, invisible: bool) -> void:
+	var actor = actors.get(peer_id)
+	if not is_instance_valid(actor):
+		return
+	for index in players.size():
+		if int(players[index].get("peer_id", 0)) == peer_id:
+			var record := (players[index] as Dictionary).duplicate(true)
+			record.power = power_id
+			record.invisible = invisible
+			players[index] = record
+			break
+	if peer_id == NetworkSession.local_peer_id():
+		local_player.set_network_power(power_id, invisible)
+	else:
+		actor.set_power_state(power_id, invisible)
+
+
+func _on_snitch_snapshot(snapshot: Dictionary) -> void:
+	for id_value in snapshot.keys():
+		var id := int(id_value)
+		var record: Dictionary = snapshot[id_value]
+		var ball = snitch_actors.get(id)
+		if not is_instance_valid(ball):
+			ball = StaticBody3D.new()
+			ball.set_script(FlyingPowerBall)
+			ball.name = "PowerBall_%d" % id
+			ball.setup(record)
+			game.add_child(ball)
+			snitch_actors[id] = ball
+		else:
+			ball.receive_snapshot(record)
+	for id_value in snitch_actors.keys():
+		var id := int(id_value)
+		if not snapshot.has(id) and not snapshot.has(str(id)):
+			var stale = snitch_actors[id]
+			if is_instance_valid(stale):
+				stale.queue_free()
+			snitch_actors.erase(id)
 
 
 func _on_player_eliminated(victim_peer_id: int, attacker_peer_id: int) -> void:

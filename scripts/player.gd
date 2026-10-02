@@ -26,6 +26,7 @@ extends CharacterBody3D
 const Traits = preload("res://scripts/traits.gd")
 const Projectile = preload("res://scripts/projectile.gd")
 const CustomizationData = preload("res://scripts/character_customization_data.gd")
+const Powers = preload("res://scripts/power_abilities.gd")
 
 
 # --- Signals ----------------------------------------------------------------
@@ -46,6 +47,7 @@ signal died
 
 ## Fired when a new pair is inherited, carrying the pair data for the HUD popup.
 signal pair_inherited(pair: Dictionary)
+signal power_changed(power_id: String, invisible: bool)
 
 
 # --- Base tuning numbers ----------------------------------------------------
@@ -55,6 +57,7 @@ signal pair_inherited(pair: Dictionary)
 
 ## Hit points at full health.
 @export var max_health: float = 100.0
+@export var max_shield: float = 100.0
 
 ## Ground movement speed in metres per second, before any pair multiplier.
 @export var base_speed: float = 7.0
@@ -71,7 +74,7 @@ signal pair_inherited(pair: Dictionary)
 @export var base_fire_interval: float = 0.28
 
 ## Health removed from an enemy by one direct glob, before multipliers.
-@export var base_damage: float = 22.0
+@export var base_damage: float = Powers.BASE_DAMAGE
 
 ## How much paint the reservoir holds. One shot costs one unit.
 @export var base_max_ammo: float = 30.0
@@ -105,11 +108,16 @@ var _splash_radius: float
 var _splash_mult: float
 var _regen: float
 var _regen_delay: float
+var _projectile_speed: float = 90.0
+var _projectile_kind := "bullet"
 
 
 # --- Live state -------------------------------------------------------------
 var health: float
+var shield: float
 var ammo: float
+var current_power := ""
+var power_invisible := false
 
 ## The id of the pair currently inherited, e.g. "monolith". Starts as the
 ## deliberately blank "apprentice" pair.
@@ -150,6 +158,7 @@ var _muzzle: MeshInstance3D
 var _camera_home := Vector3(0.0, 1.6, 0.0)
 var _spectating := false
 var _spectate_target: Node3D
+var _power_halo: MeshInstance3D
 
 ## Where the view-model sits when you are perfectly still. Sway and bob are
 ## always applied as an offset from this, so the gun can never drift away from
@@ -176,9 +185,12 @@ func _ready() -> void:
 	_build_body()
 	_build_camera()
 	_build_view_model()
+	_build_power_halo()
 
 	health = max_health
+	shield = max_shield
 	_apply_pair(Traits.starting_id())
+	_apply_power()
 	ammo = _max_ammo
 
 	# Capture the mouse: the cursor disappears and all mouse movement is fed to
@@ -315,6 +327,25 @@ func _make_box(box_size: Vector3, at: Vector3, box_color: Color) -> MeshInstance
 	return node
 
 
+func _build_power_halo() -> void:
+	_power_halo = MeshInstance3D.new()
+	_power_halo.name = "PowerHalo"
+	var torus := TorusMesh.new()
+	torus.inner_radius = 0.34
+	torus.outer_radius = 0.43
+	_power_halo.mesh = torus
+	_power_halo.position = Vector3(0.0, 2.28, 0.0)
+	var material := StandardMaterial3D.new()
+	material.albedo_color = Color("#FFE66D")
+	material.emission_enabled = true
+	material.emission = Color("#FFE66D")
+	material.emission_energy_multiplier = 2.5
+	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	_power_halo.material_override = material
+	_power_halo.visible = false
+	add_child(_power_halo)
+
+
 ## _unhandled_input receives events that no UI element already consumed. Mouse
 ## motion is read here rather than in _process because motion arrives as
 ## discrete events - reading it on a timer would drop movement on slow frames
@@ -346,6 +377,9 @@ func _unhandled_input(event: InputEvent) -> void:
 	# button. Clicking in the window re-captures it, handled in _process.
 	if event.is_action_pressed("ui_cancel"):
 		_set_mouse_captured(false)
+
+	if event.is_action_pressed("toggle_power") and current_power == "invisibility":
+		NetworkSession.request_invisibility(not power_invisible)
 
 
 func _physics_process(delta: float) -> void:
@@ -416,6 +450,8 @@ func _move(delta: float) -> void:
 
 
 func _shoot(_delta: float) -> void:
+	if power_invisible:
+		return
 	# Re-capture the mouse if the player clicked back into the window after
 	# pressing Escape. Checked before firing so the click that returns focus
 	# does not also fire a shot.
@@ -438,10 +474,12 @@ func _shoot(_delta: float) -> void:
 	var glob = Node3D.new()
 	glob.set_script(Projectile)
 	glob.damage = _damage
-	glob.speed = projectile_speed
+	glob.speed = _projectile_speed
 	glob.splash_radius = _splash_radius
 	glob.splash_mult = _splash_mult
-	glob.color = pair["color"]
+	glob.projectile_kind = _projectile_kind
+	glob.allow_self_damage = _projectile_kind == "rocket"
+	glob.color = Powers.color_for(current_power) if not current_power.is_empty() else pair["color"]
 	if not tdm_team.is_empty():
 		glob.configure_tdm(self, tdm_team)
 
@@ -471,10 +509,11 @@ func _shoot(_delta: float) -> void:
 	if NetworkSession.is_in_match():
 		NetworkSession.report_shot(shot_origin, shot_direction, {
 			"damage": _damage,
-			"speed": projectile_speed,
+			"speed": _projectile_speed,
 			"splash_radius": _splash_radius,
 			"splash_mult": _splash_mult,
-			"color": pair["color"],
+			"projectile_kind": _projectile_kind,
+			"color": glob.color,
 		})
 
 	_kick_view_model()
@@ -630,6 +669,67 @@ func _apply_pair(id: String) -> void:
 		mat.emission = pair["color"]
 
 
+func set_network_power(power_id: String, invisible: bool) -> void:
+	current_power = power_id if Powers.is_valid(power_id) else ""
+	power_invisible = invisible and current_power == "invisibility"
+	_apply_power()
+	power_changed.emit(current_power, power_invisible)
+	stats_changed.emit()
+
+
+func _apply_power() -> void:
+	# Begin from the ordinary online weapon and movement tuning every time so a
+	# swapped or traded power cannot leave stale modifiers behind.
+	_speed = base_speed
+	_damage = Powers.BASE_DAMAGE
+	_fire_interval = base_fire_interval
+	_projectile_speed = projectile_speed
+	_projectile_kind = "bullet"
+	_splash_radius = 0.0
+	_splash_mult = 0.0
+	var power := Powers.get_power(current_power)
+	if not power.is_empty():
+		_speed = base_speed * float(power.get("move_mult", 1.0))
+		_damage = float(power.get("damage", Powers.BASE_DAMAGE))
+		_fire_interval = float(power.get("fire_interval", base_fire_interval))
+		_projectile_speed = float(power.get("projectile_speed", projectile_speed))
+		_projectile_kind = str(power.get("projectile_kind", "bullet"))
+		_splash_radius = float(power.get("splash_radius", 0.0))
+		_splash_mult = float(power.get("splash_mult", 0.0))
+	if is_instance_valid(_power_halo):
+		_power_halo.visible = not current_power.is_empty() and not power_invisible
+		var halo_material := _power_halo.material_override as StandardMaterial3D
+		var halo_color := Powers.color_for(current_power)
+		halo_material.albedo_color = halo_color
+		halo_material.emission = halo_color
+	if is_instance_valid(_view_model):
+		_view_model.visible = not power_invisible and not _spectating
+	if is_instance_valid(_muzzle):
+		var muzzle_material := _muzzle.material_override as StandardMaterial3D
+		var muzzle_color: Color = Powers.color_for(current_power) if not current_power.is_empty() else pair.get("color", Color.WHITE)
+		muzzle_material.albedo_color = muzzle_color
+		muzzle_material.emission = muzzle_color
+
+
+func has_current_power() -> bool:
+	return not current_power.is_empty()
+
+
+func get_current_power_type() -> String:
+	return current_power
+
+
+func can_trade_power_at_station() -> bool:
+	return has_current_power() and not _dead
+
+
+func try_consume_power_for_station() -> bool:
+	if NetworkSession.is_in_match() or not can_trade_power_at_station():
+		return false
+	set_network_power("", false)
+	return true
+
+
 # ============================================================================
 # DAMAGE
 # ============================================================================
@@ -640,10 +740,17 @@ func _apply_pair(id: String) -> void:
 func take_damage(amount: float, attacker = null) -> void:
 	if _dead:
 		return
+	if NetworkSession.is_in_match():
+		if attacker == self:
+			NetworkSession.report_self_damage(amount)
+		return
 	if not tdm_team.is_empty() and is_instance_valid(tdm_manager):
 		tdm_manager.record_damage(attacker, self)
 
-	health -= amount * _taken_mult
+	var applied := amount * _taken_mult
+	var absorbed := minf(shield, applied)
+	shield -= absorbed
+	health -= applied - absorbed
 	_since_hurt = 0.0
 
 	hurt.emit()
@@ -660,6 +767,7 @@ func tdm_respawn(at: Vector3) -> void:
 	stop_spectating()
 	_dead = false
 	health = max_health
+	shield = max_shield
 	global_position = at
 	velocity = Vector3.ZERO
 	stats_changed.emit()
@@ -686,14 +794,19 @@ func stop_spectating() -> void:
 	_camera.top_level = false
 	_camera.position = _camera_home
 	_camera.rotation = Vector3.ZERO
-	_view_model.visible = true
+	_view_model.visible = not power_invisible
 	collision_layer = 2
 	collision_mask = 1 | 4
 
 
 func apply_network_health(next_health: float) -> void:
-	var was_higher := next_health < health
+	apply_network_vitals(next_health, shield)
+
+
+func apply_network_vitals(next_health: float, next_shield: float) -> void:
+	var was_higher := next_health < health or next_shield < shield
 	health = clampf(next_health, 0.0, max_health)
+	shield = clampf(next_shield, 0.0, max_shield)
 	if was_higher:
 		_since_hurt = 0.0
 		hurt.emit()
@@ -711,6 +824,12 @@ func network_pitch() -> float:
 ## Called by game.gd between waves.
 func heal(amount: float) -> void:
 	health = minf(max_health, health + amount)
+	stats_changed.emit()
+
+
+func restore_full_vitals() -> void:
+	health = max_health
+	shield = max_shield
 	stats_changed.emit()
 
 

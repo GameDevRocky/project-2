@@ -24,6 +24,7 @@ extends CanvasLayer
 ## then a readable list rather than generated scene data.
 
 const Traits = preload("res://scripts/traits.gd")
+const Powers = preload("res://scripts/power_abilities.gd")
 
 # --- Colours used throughout the interface ---------------------------------
 const INK := Color("#2B2D42")          ## Charcoal, for text on light panels
@@ -31,10 +32,13 @@ const PANEL := Color(1.0, 1.0, 1.0, 0.82)
 const HEALTH_FULL := Color("#FF6B81")
 const HEALTH_LOW := Color("#D62246")
 const PAINT := Color("#00A896")
+const SHIELD := Color("#58D7F2")
 
 # --- Nodes, all created in _ready() ----------------------------------------
 var _health_fill: ColorRect
 var _health_label: Label
+var _shield_fill: ColorRect
+var _shield_label: Label
 var _paint_fill: ColorRect
 var _paint_label: Label
 var _pair_title: Label
@@ -188,7 +192,7 @@ func _build_stat_bars() -> void:
 	# PRESET_BOTTOM_LEFT anchors to that corner, so the bars stay put when the
 	# window is resized rather than drifting into the middle of the screen.
 	root.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
-	root.position = Vector2(40, -110)
+	root.position = Vector2(40, -158)
 	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(root)
 
@@ -205,17 +209,30 @@ func _build_stat_bars() -> void:
 	_health_fill.position = Vector2(0, 0)
 	root.add_child(_health_fill)
 
+	# --- Shield ---
+	_shield_label = _make_label("SHIELD", 13, Color.WHITE)
+	_shield_label.position = Vector2(0, 28)
+	root.add_child(_shield_label)
+
+	var shield_bg := _make_rect(Color(0.17, 0.18, 0.26, 0.55), Vector2(BAR_WIDTH, BAR_HEIGHT))
+	shield_bg.position = Vector2(0, 48)
+	root.add_child(shield_bg)
+
+	_shield_fill = _make_rect(SHIELD, Vector2(BAR_WIDTH, BAR_HEIGHT))
+	_shield_fill.position = Vector2(0, 48)
+	root.add_child(_shield_fill)
+
 	# --- Paint ---
 	_paint_label = _make_label("PAINT", 13, Color.WHITE)
-	_paint_label.position = Vector2(0, 28)
+	_paint_label.position = Vector2(0, 76)
 	root.add_child(_paint_label)
 
 	var paint_bg := _make_rect(Color(0.17, 0.18, 0.26, 0.55), Vector2(BAR_WIDTH, BAR_HEIGHT * 0.7))
-	paint_bg.position = Vector2(0, 48)
+	paint_bg.position = Vector2(0, 96)
 	root.add_child(paint_bg)
 
 	_paint_fill = _make_rect(PAINT, Vector2(BAR_WIDTH, BAR_HEIGHT * 0.7))
-	_paint_fill.position = Vector2(0, 48)
+	_paint_fill.position = Vector2(0, 96)
 	root.add_child(_paint_fill)
 
 
@@ -337,8 +354,12 @@ func bind_player(player) -> void:
 	player.stats_changed.connect(_on_stats_changed)
 	player.hurt.connect(_on_hurt)
 	player.pair_inherited.connect(_on_pair_inherited)
+	player.power_changed.connect(_on_power_changed)
 	_on_stats_changed()
-	_show_pair(player.pair)
+	if NetworkSession.is_in_match():
+		_show_power(player.current_power, player.power_invisible)
+	else:
+		_show_pair(player.pair)
 
 
 func _on_stats_changed() -> void:
@@ -354,6 +375,13 @@ func _on_stats_changed() -> void:
 	# something you notice in peripheral vision without reading the number.
 	_health_fill.color = HEALTH_LOW.lerp(HEALTH_FULL, health_fraction)
 	_health_label.text = "HEALTH   %d" % int(ceil(health))
+
+	var shield: float = _player.shield
+	var max_shield: float = _player.max_shield
+	var shield_fraction: float = clampf(shield / max_shield, 0.0, 1.0)
+	_shield_fill.size.x = BAR_WIDTH * shield_fraction
+	_shield_fill.color = Color("#315B9A").lerp(SHIELD, shield_fraction)
+	_shield_label.text = "SHIELD   %d" % int(ceil(shield))
 
 	var ammo: float = _player.ammo
 	var max_ammo: float = _player.get_max_ammo()
@@ -378,6 +406,27 @@ func _on_pair_inherited(pair: Dictionary) -> void:
 	_show_pair(pair)
 	announce(str(pair["name"]).to_upper(),
 		"%s  ·  %s" % [pair["ability_name"], pair["weakness_name"]])
+
+
+func _on_power_changed(power_id: String, invisible: bool) -> void:
+	_show_power(power_id, invisible)
+	if not power_id.is_empty():
+		var power := Powers.get_power(power_id)
+		announce(str(power.get("name", "POWER")), str(power.get("description", "")))
+
+
+func _show_power(power_id: String, invisible: bool) -> void:
+	if power_id.is_empty():
+		_pair_title.text = "NO POWER"
+		_pair_title.add_theme_color_override("font_color", Color.WHITE)
+		_pair_ability.text = "Shoot down a flying power ball to claim its ability."
+		_pair_weakness.text = "Trade an ability at a station for full health and shield."
+		return
+	var power := Powers.get_power(power_id)
+	_pair_title.text = str(power.get("name", "POWER")) + ("  [HIDDEN]" if invisible else "")
+	_pair_title.add_theme_color_override("font_color", power.get("color", Color.WHITE))
+	_pair_ability.text = str(power.get("description", ""))
+	_pair_weakness.text = "Golden halo active" if not invisible else "Invisibility active - weapon disabled"
 
 
 func _show_pair(pair: Dictionary) -> void:

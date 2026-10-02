@@ -16,6 +16,7 @@ enum StationState { READY, INTERACTING, COOLDOWN }
 ## Keep false while the Player Power System is being implemented. Set true
 ## once it is connected if a player must carry a power to use this station.
 @export var require_power_to_trade: bool = false
+@export var station_id: int = 0
 
 const READY_COLOR := Color("#36E6D2")
 const COOLDOWN_COLOR := Color("#536C70")
@@ -182,6 +183,14 @@ func _complete_interaction() -> void:
 	if not _player_can_trade(player):
 		_cancel_interaction()
 		return
+	if NetworkSession.is_in_match():
+		NetworkSession.request_power_trade(station_id)
+		_disconnect_hurt_listener()
+		_active_player = null
+		_interaction_elapsed = 0.0
+		_cooldown_elapsed = cooldown_duration
+		_set_state(StationState.COOLDOWN)
+		return
 	var trade := _consume_player_power(player)
 	if require_power_to_trade and not bool(trade.get("consumed", false)):
 		_cancel_interaction()
@@ -246,7 +255,7 @@ func _set_state(new_state: StationState) -> void:
 			state_name = &"ready"
 			_core_material.albedo_color = READY_COLOR
 			_core_material.emission = READY_COLOR
-			_status.text = "READY  [E] HOLD"
+			_status.text = "TRADE POWER + FULL RESTORE  HOLD INTERACT"
 			_ring.visible = false
 		StationState.INTERACTING:
 			state_name = &"interacting"

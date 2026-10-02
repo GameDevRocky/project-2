@@ -55,6 +55,8 @@ var life: float = 4.0
 var attacker = null
 var attacker_team := ""
 var can_deal_damage := true
+var projectile_kind := "bullet"
+var allow_self_damage := false
 
 
 # --- Physics layer numbers, named so the code reads clearly -----------------
@@ -123,8 +125,9 @@ func _ready() -> void:
 	var mesh_node := MeshInstance3D.new()
 	mesh_node.name = "Bullet"
 	var sphere := SphereMesh.new()
-	sphere.radius = BULLET_RADIUS
-	sphere.height = BULLET_RADIUS * 2.0
+	var visual_radius := 0.18 if projectile_kind == "rocket" else BULLET_RADIUS
+	sphere.radius = visual_radius
+	sphere.height = visual_radius * 2.0
 	# radial_segments/rings control how many triangles the ball is made of.
 	# Low numbers keep it faceted, which suits the GDD's "low-poly" direction
 	# and costs almost nothing to draw even with dozens on screen.
@@ -144,7 +147,7 @@ func _ready() -> void:
 	# threshold, so incoming paint carries a halo you can track and dodge.
 	mat.emission_enabled = true
 	mat.emission = color
-	mat.emission_energy_multiplier = 1.8
+	mat.emission_energy_multiplier = 3.0 if projectile_kind == "rocket" else 1.8
 	# Ignore the arena's distance haze, so a glob fired from across the room is
 	# as crisp as one fired from next to you.
 	mat.disable_fog = true
@@ -161,14 +164,14 @@ func _build_trail() -> void:
 	var trail := MeshInstance3D.new()
 	trail.name = "Trail"
 	var trail_mesh := CylinderMesh.new()
-	trail_mesh.top_radius = TRAIL_RADIUS
+	trail_mesh.top_radius = 0.065 if projectile_kind == "rocket" else TRAIL_RADIUS
 	trail_mesh.bottom_radius = 0.0
-	trail_mesh.height = TRAIL_LENGTH
+	trail_mesh.height = 2.2 if projectile_kind == "rocket" else TRAIL_LENGTH
 	trail_mesh.radial_segments = 6
 	trail_mesh.rings = 1
 	trail.mesh = trail_mesh
 	trail.rotation.x = deg_to_rad(90.0)
-	trail.position.z = TRAIL_LENGTH * 0.5
+	trail.position.z = float(trail_mesh.height) * 0.5
 	trail.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 
 	var trail_material := StandardMaterial3D.new()
@@ -246,7 +249,8 @@ func _impact(at: Vector3, what, surface_normal: Vector3 = Vector3.UP) -> void:
 	var friendly_hit := false
 	if not attacker_team.is_empty() and what != null and what.is_in_group("tdm_combatants"):
 		friendly_hit = str(what.get("tdm_team")) == attacker_team
-	if can_deal_damage and what != null and not friendly_hit and what.is_in_group(target_group) and what.has_method("take_damage"):
+	var is_snitch: bool = what != null and bool(what.is_in_group("snitch_balls"))
+	if can_deal_damage and what != null and not friendly_hit and (what.is_in_group(target_group) or is_snitch) and what.has_method("take_damage"):
 		what.take_damage(damage, attacker)
 
 	# Splash damage, if the shooter's inherited pair grants it. This is a plain
@@ -255,6 +259,8 @@ func _impact(at: Vector3, what, surface_normal: Vector3 = Vector3.UP) -> void:
 	# just as fast, and it is far easier to read and to debug.
 	if can_deal_damage and splash_radius > 0.0:
 		_splash(at, what)
+	if projectile_kind == "rocket":
+		_spawn_rocket_sparks(at)
 
 	queue_free()
 
@@ -275,7 +281,8 @@ func _spawn_impact_debris(at: Vector3, surface_normal: Vector3) -> void:
 	material.emission_energy_multiplier = 1.1
 	material.disable_fog = true
 
-	for index in 6:
+	var shard_count := 14 if projectile_kind == "rocket" else 6
+	for index in shard_count:
 		var shard := MeshInstance3D.new()
 		shard.name = "Shard%d" % index
 		var shard_mesh := BoxMesh.new()
@@ -318,7 +325,8 @@ func _splash(at: Vector3, already_hit) -> void:
 			continue
 		if not node.has_method("take_damage"):
 			continue
-		if not attacker_team.is_empty() and str(node.get("tdm_team")) == attacker_team:
+		if (not attacker_team.is_empty() and str(node.get("tdm_team")) == attacker_team
+				and not (allow_self_damage and node == attacker)):
 			continue
 
 		# Deliberately untyped: see the note in _impact about static method checks.
@@ -335,6 +343,43 @@ func _splash(at: Vector3, already_hit) -> void:
 		target.take_damage(splash_damage * falloff, attacker)
 
 	_spawn_burst(at)
+
+
+func _spawn_rocket_sparks(at: Vector3) -> void:
+	var sparks := Node3D.new()
+	sparks.name = "RocketSparks"
+	get_parent().add_child(sparks)
+	sparks.global_position = at
+	var spark_material := StandardMaterial3D.new()
+	spark_material.albedo_color = Color("#FFF2A6")
+	spark_material.emission_enabled = true
+	spark_material.emission = Color("#FF8A30")
+	spark_material.emission_energy_multiplier = 5.0
+	spark_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	for index in 28:
+		var spark := MeshInstance3D.new()
+		var spark_mesh := BoxMesh.new()
+		spark_mesh.size = Vector3(0.055, 0.055, randf_range(0.55, 1.35))
+		spark.mesh = spark_mesh
+		spark.material_override = spark_material
+		var burst_direction := Vector3(
+			randf_range(-1.0, 1.0), randf_range(-0.35, 1.0), randf_range(-1.0, 1.0)).normalized()
+		sparks.add_child(spark)
+		spark.look_at(spark.global_position + burst_direction, Vector3.UP)
+		var tween := spark.create_tween()
+		tween.set_parallel(true)
+		tween.tween_property(spark, "position", burst_direction * randf_range(3.5, 8.5), 0.42).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+		tween.tween_property(spark, "scale", Vector3.ZERO, 0.18).set_delay(0.24)
+	var light := OmniLight3D.new()
+	light.light_color = Color("#FF9A42")
+	light.light_energy = 9.0
+	light.omni_range = 12.0
+	sparks.add_child(light)
+	var light_tween := light.create_tween()
+	light_tween.tween_property(light, "light_energy", 0.0, 0.32)
+	var cleanup := sparks.create_tween()
+	cleanup.tween_interval(0.5)
+	cleanup.tween_callback(sparks.queue_free)
 
 
 ## A quick expanding ring drawn when a Splatter Round bursts, so the player can

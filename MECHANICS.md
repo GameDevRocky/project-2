@@ -1,217 +1,75 @@
-# Project 2: Inheritance — Mechanics
+# Paint Strike: Glowfall - Online Mechanics
 
-A first-person paint-shooter. Hunt enemies, inherit one defeated enemy's ability
-and weakness **in place of** your current pair, and use that combination to take
-on tougher targets.
-
-Open the project in Godot 4.7 and press **F5**.
+The `online` branch is a browser multiplayer shooter backed by a dedicated
+Godot WebSocket server. Matches contain human players only.
 
 ## Controls
 
-| Action | Key |
+| Action | Keyboard and mouse | Controller |
+| --- | --- | --- |
+| Move | `W` `A` `S` `D` | Left stick |
+| Look | Mouse | Right stick |
+| Jump | `Space` | South button |
+| Fire | Left mouse | Right trigger |
+| Toggle invisibility | Right mouse | Left shoulder |
+| Use a trade station | Hold `E` | Hold west button |
+| Release mouse | `Esc` | - |
+
+## Match modes
+
+- **Survival:** every player fights every other player. Eliminated players
+  spectate their killer and follow the killer chain if that player dies.
+- **Team Deathmatch:** players are split evenly and randomly between red and
+  blue each round. The first team to 25 kills wins. Players respawn after three
+  seconds with full health and shield.
+- Matches with fewer than two players return to the menu. A team round ends if
+  one team becomes empty. A new round starts after a ten second intermission.
+
+## Vitality and weapons
+
+Every player starts with 100 shield and 100 health. Damage removes shield first.
+Ordinary paint bullets deal 4.4 damage, which is 80% below the earlier 22 damage
+value. Projectiles are raycast between physics frames so fast shots cannot pass
+through thin geometry.
+
+## Flying power balls
+
+At the beginning of each round the server creates one flying ball for every
+power. Their paths, health, destruction, and ownership are server controlled and
+synchronized to all clients. A ball has 35 health. The player who destroys it
+receives its power. If that player already held a power, the replaced power is
+released back into the arena as another ball.
+
+Power definitions live in `scripts/power_abilities.gd` so future abilities can
+be added without adding another inventory or networking path.
+
+| Power | Effect |
 | --- | --- |
-| Move | `W` `A` `S` `D` |
-| Jump | `Space` |
-| Fire paint | Left mouse |
-| Look | Mouse movement |
-| **Inherit a core** | `E` while standing near it |
-| Release / recapture mouse | `Esc` / click |
-| Restart after a run ends | `R` |
-| Hold the TDM scoreboard | `Tab` |
+| Invisibility | Right mouse or left shoulder toggles it. The player remains collidable and damageable but cannot shoot while hidden. |
+| Sprayer | Fires 2.5 times faster. |
+| Rocket Launcher | Fires slower rockets with a seven metre blast, large sparks, splash falloff, and close range self damage. |
+| Speed | Doubles movement speed. |
+| 2 Shot | Deals 100 damage per shot with a slower fire rate, so two direct hits remove a full 100 shield plus 100 health. |
 
-## Game modes
+A glowing halo in the power's color appears above every visible powered player.
 
-**PLAY** opens the game-mode screen. The modes are separate:
+## Trade stations
 
-- **Team Death Match** fills two local simulated teams of ten, counts down,
-  then starts a ten-minute match. Team kills score points. The local player and
-  bots use the shared paint projectile and damage path. Bots target the other
-  team, respawn after three seconds, and update kills, deaths, and assists.
-  Holding `Tab` shows the live roster scoreboard. At `00:00`, the higher team
-  kill total wins (equal totals draw).
-- **Survival** starts the original six-wave run directly. Its waves, enemy
-  archetypes, inheritance, and Survival HUD remain on the existing path.
+Two stations are placed in opposite buildings. A player carrying a power can
+hold `E` without moving or taking damage to trade it. The server then restores
+that player to 100 health and 100 shield, removes the power, and creates a new
+ball containing the traded power above that station.
 
-The menu passes generic lobby records and the selected mode into `game.gd`.
-`game.gd` keeps Survival orchestration and starts
-`scripts/tdm_match_controller.gd` only for TDM. TDM bots are adapted from
-`scripts/enemy.gd`; `scripts/projectile.gd` remains the shared paint projectile.
-This is local simulation, not networking.
+## Authority boundaries
 
-## The core loop
+| System | Owner |
+| --- | --- |
+| Lobbies, teams, health, shield, powers, ball paths, ball damage, scoring, respawns, and trades | `scripts/net/network_session.gd` on the dedicated server |
+| Local movement, shooting, first person weapon, and input | `scripts/player.gd` |
+| Remote human actors and smoothing | `scripts/net/remote_player.gd` |
+| Projectile flight and effects | `scripts/projectile.gd` |
+| Flying ball visuals and interpolation | `scripts/flying_power_ball.gd` |
+| Match actors, spectator flow, and online HUD | `scripts/tdm_match_controller.gd` |
 
-1. A wave spawns around the edge of the arena.
-2. You kill an enemy. It drops a glowing **paint core** in its own colour.
-3. Press `E` near that core to inherit its pair.
-4. Clear all six waves.
-
-## Inheritance
-
-This is the whole game. Every pair is **one ability bolted to one weakness**, and
-you can never take one half without the other. Inheriting **replaces** your
-current pair — the old ability is gone.
-
-You start with the **Apprentice Brush**, which does nothing at all: no ability,
-no weakness. That is deliberate. It means your first inheritance is a real
-decision rather than a free upgrade.
-
-| Dropped by | Ability | Weakness |
-| --- | --- | --- |
-| **Sprayer** (pink) | Rapid Brush — fire rate ×2.4 | Thin Paint — damage ×0.55 |
-| **Bounder** (mint) | Light Step — move ×1.45, jump ×1.3 | Brittle Canvas — damage taken ×1.7 |
-| **Blotter** (teal) | Splatter Rounds — globs burst for 60% splash in 3.2m | Heavy Reservoir — move ×0.75, half refill rate |
-| **Monolith** (charcoal) | Thick Coat — damage taken ×0.45 | Sluggish Brush — fire rate ×0.55 |
-| **Ghost** (white) | Second Wind — regain 7 health/sec after 3s unhurt | Faded Pigment — half paint capacity |
-
-Nothing here is strictly best. Rapid Brush shreds swarms but cannot punch through
-a Monolith. Thick Coat roughly doubles how long you survive but makes every fight
-take twice as long. Light Step makes you very hard to hit and very easy to kill.
-
-**Cores expire after 14 seconds.** You commit to a pair while the fight is still
-going, rather than clearing the room and shopping at leisure.
-
-## Enemies
-
-Each archetype fights the way its dropped pair plays, so you already know what
-taking it will feel like before you take it.
-
-- **Sprayer** — fast trigger, weak globs, dies quickly.
-- **Bounder** — no gun. Rushes you, hits, then withdraws for about a second
-  before coming in again. That withdrawal is your window.
-- **Blotter** — slow artillery. Lobs splashing paint from range. You cannot
-  out-strafe the splash, so you have to go deal with it.
-- **Monolith** — takes 45% less damage and hits hard, but is slow enough that you
-  can always disengage. This is the "tougher target" the loop is pointing at.
-- **Ghost** — heals itself if you stop shooting it, so chip damage is worthless.
-
-**Enemies aim at where you are, never where you are going.** Strafing is
-therefore a reliable dodge, and it is the main thing that keeps the game hard
-rather than unfair.
-
-## Paint
-
-Your reservoir holds 30 and refills at 11/sec, starting 0.6s after your last
-shot. Hold the trigger down and you run dry; break contact for a moment and it
-comes back. The Sprayer pair spends paint almost exactly as fast as it returns,
-so rapid fire is a sustain problem as well as a damage one.
-
-## Waves and difficulty
-
-Six waves. Each introduces at most one new archetype, so you always get a wave to
-learn something in before it appears in a mix. The Monolith does not show up
-until wave 4, by which point you have had three chances to pick up something that
-handles it.
-
-Clearing a wave heals you **+40** and gives a 5-second breather. Enemy health
-scales **+6% per wave** — the difficulty is meant to come from the enemy mix and
-from the pair you are carrying, not from bullet sponges.
-
-## Arena
-
-A fixed 90m square arena built around a central hub, three enterable buildings,
-multiple side routes, and a recessed southern lane with ramps at both ends. The
-southwest building has a reachable upper firing floor; the central platform
-offers exposed high ground with a long sightline. Four Healing Stations sit in the northwest
-and northeast buildings, on the southwest upper floor, and along the lower route.
-The layout
-is fixed, never randomised — dying should teach you the room.
-
-## Current code boundaries
-
-| System | Lives in | Owns |
-| --- | --- | --- |
-| **Survival game logic** | `scripts/game.gd` | Waves, Survival spawning, inherit offer, Survival endings |
-| **TDM match state** | `scripts/tdm_match_controller.gd` | Lobby roster, teams, TDM bot spawning, score, timer, respawn, scoreboard/results |
-| **Survival UX** | `scripts/hud.gd` | Survival HUD and Survival end panel |
-| **TDM UX** | `scripts/tdm_match_controller.gd` | TDM score/timer HUD, live scoreboard, TDM result panel |
-| **Networking** | Not implemented | Replace local simulated lobby records and bot actors with session-backed player records/actors later |
-
-The offline TDM controller is the current authority for TDM-only match state.
-Do not route Survival through that controller. A future online session should
-replace the local lobby population and authority layer, while keeping the menu
-and scoreboard data contracts generic.
-
-## Snitch mechanics handoff (implementation stub)
-
-**Status:** Snitch Ball behavior is not implemented in this checkout. No Snitch
-script or scene currently exists. The Healing Station already exposes the
-integration seam below; keep its implementation unchanged when adding Snitch
-behavior.
-
-### Existing handoff contract
-
-`scripts/healing_station.gd` declares:
-
-```gdscript
-signal power_traded(power_type: Variant, player: Node3D, station: Node3D)
-```
-
-The station emits this only after the interaction completes, its player power
-API confirms consumption, and the station heals the player. The signal is not
-emitted for the current healing-only fallback. `require_power_to_trade` defaults
-to `false`, so stations remain usable while the player power API is being built.
-
-The station expects the eventual player power API to provide:
-
-```gdscript
-has_current_power() -> bool
-get_current_power_type() -> Variant
-can_trade_power_at_station() -> bool
-try_consume_power_for_station() -> bool
-```
-
-The player is responsible for owning/consuming its power. The station does not
-store powers or decide Snitch pickup effects.
-
-### Suggested implementation seam
-
-Add a small `SnitchBallSystem` (or equivalent manager) and a reusable
-`SnitchBall` scene/script. In `game.gd::_build_healing_station()`, connect each
-station's `power_traded` signal to the manager. Suggested responsibilities:
-
-```gdscript
-SnitchBallSystem.register_station(station: Node3D) -> void
-SnitchBallSystem._on_station_power_traded(
-    power_type: Variant, player: Node3D, station: Node3D
-) -> void
-SnitchBall.setup(power_type: Variant, system: Node) -> void
-SnitchBall.collect(player: Node3D) -> void
-```
-
-These are design stubs, not existing methods. The manager should spawn one ball
-with the surrendered power type at the emitting station; the ball should accept
-only a valid player pickup and report collection once. Use the future shared
-power data/API rather than adding a second power inventory to the Snitch. Before
-implementing the pickup result, confirm the intended GDD rule for what collecting
-the ball does; that rule is not specified by the current code. Also confirm
-whether the mechanic is enabled in both modes or Survival only.
-
-### Integration and validation checklist for the next contributor
-
-1. Read this section and inspect `healing_station.gd`, `player.gd`, and the
-   current power data/API before editing.
-2. Leave `healing_station.gd` and `arena.gd` unchanged unless a concrete API
-   mismatch makes a minimal change necessary; prefer connecting its existing
-   signal from `game.gd`.
-3. Keep ball ownership and power types data-driven. Do not add online/network
-   assumptions or a second player power store.
-4. Verify a successful trade emits once with the correct power/player/station;
-   a canceled, interrupted, or unavailable-power interaction emits no ball.
-5. Verify pickup is one-shot, the intended power result is applied, the ball
-   cleans up, station cooldown still works, and Survival behavior is preserved.
-
-## Testing
-
-The game can be driven without a human at the keyboard:
-
-```
-GODOT="C:/Users/jlion/Downloads/Godot_v4.7.2-stable_win64.exe/Godot_v4.7.2-stable_win64_console.exe"
-"$GODOT" --headless --path . --quit-after 18000 -- --autoplay
-```
-
-`tools/autoplay.gd` fakes a player — aims, burst-fires, strafes, grabs cores —
-and prints a trace of every wave, kill and inheritance. It is only created when
-that flag is passed. Use `--verbose` for the logging without the bot.
-
-The bot is deliberately mediocre and dies around wave 3–4 of 6. That is the
-tuning target, not a bug.
+The public browser build is published at
+`https://gamedevrocky.github.io/project-2/online/`.

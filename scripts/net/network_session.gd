@@ -14,6 +14,9 @@ signal match_started(mode: String, roster: Array[Dictionary])
 signal remote_transform_received(peer_id: int, position: Vector3, yaw: float, pitch: float, velocity: Vector3)
 signal remote_shot_received(peer_id: int, origin: Vector3, direction: Vector3, shot_data: Dictionary)
 signal health_changed(peer_id: int, health: float)
+signal vitals_changed(peer_id: int, health: float, shield: float)
+signal power_changed(peer_id: int, power_id: String, invisible: bool)
+signal snitch_snapshot_changed(snapshot: Dictionary)
 signal player_eliminated(victim_peer_id: int, attacker_peer_id: int)
 signal player_respawned(peer_id: int)
 signal player_left_match(peer_id: int)
@@ -35,6 +38,17 @@ const TDM_KILL_LIMIT := 25
 const TEAM_RED := "RED"
 const TEAM_BLUE := "BLUE"
 const TEAM_FFA := "FFA"
+const MAX_HEALTH := 100.0
+const MAX_SHIELD := 100.0
+const SNITCH_HEALTH := 35.0
+const SNITCH_SYNC_INTERVAL := 0.1
+const Powers = preload("res://scripts/power_abilities.gd")
+const STATION_POSITIONS := [Vector3(-28.0, 0.0, -28.0), Vector3(33.0, 0.0, -31.0)]
+const SNITCH_ANCHORS := [
+	Vector3(-42.0, 6.5, -8.0), Vector3(-12.0, 8.0, 36.0),
+	Vector3(30.0, 6.0, 26.0), Vector3(42.0, 7.5, -24.0),
+	Vector3(0.0, 9.0, -42.0),
+]
 
 var connection_state := ConnectionState.OFFLINE
 var players: Dictionary = {}
@@ -43,6 +57,7 @@ var current_game_mode := ""
 var current_host_id := 0
 var match_active := false
 var public_lobbies: Array[Dictionary] = []
+var snitches: Dictionary = {}
 var local_player_info: Dictionary = {"name": "Player", "customization": {}}
 
 var _dedicated_server := false
@@ -71,7 +86,7 @@ func _ready() -> void:
 				join_lobby.call_deferred(smoke_code)
 
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
 	if not _dedicated_server:
 		return
 	var now := Time.get_ticks_msec()
@@ -79,8 +94,10 @@ func _process(_delta: float) -> void:
 		var code := str(code_value)
 		var lobby: Dictionary = _server_lobbies[code]
 		var state := str(lobby.get("state", ""))
-		if state == "match" and str(lobby.get("mode", "")) == "TEAM_DEATH_MATCH":
-			if int(lobby.get("ends_at", 0)) > 0 and now >= int(lobby.ends_at):
+		if state == "match":
+			_server_tick_snitches(code, delta)
+			if (str(lobby.get("mode", "")) == "TEAM_DEATH_MATCH"
+					and int(lobby.get("ends_at", 0)) > 0 and now >= int(lobby.ends_at)):
 				_finish_tdm(code)
 		elif state == "intermission" and now >= int(lobby.get("next_match_at", 0)):
 			_server_begin_round(code)
@@ -193,6 +210,31 @@ func report_hit(victim_peer_id: int, damage: float) -> void:
 		_submit_hit.rpc_id(1, victim_peer_id, clampf(damage, 0.0, 100.0))
 
 
+func report_self_damage(damage: float) -> void:
+	if is_in_match():
+		_submit_self_damage.rpc_id(1, clampf(damage, 0.0, 100.0))
+
+
+func report_snitch_hit(ball_id: int, damage: float) -> void:
+	if is_in_match():
+		_submit_snitch_hit.rpc_id(1, ball_id, clampf(damage, 0.0, 100.0))
+
+
+func request_invisibility(enabled: bool) -> void:
+	if is_in_match():
+		_request_invisibility.rpc_id(1, enabled)
+
+
+func request_power_trade(station_id: int) -> void:
+	if is_in_match():
+		_request_power_trade.rpc_id(1, station_id)
+
+
+func local_power() -> String:
+	var record: Dictionary = players.get(local_peer_id(), {})
+	return str(record.get("power", ""))
+
+
 func _ensure_server_connection() -> Error:
 	if is_connected_to_server():
 		_run_pending_action()
@@ -265,8 +307,9 @@ func _request_create_lobby(requested_mode: String, requested_info: Dictionary) -
 	var record := _make_player_record(peer_id, requested_info, TEAM_RED if mode == "TEAM_DEATH_MATCH" else TEAM_FFA)
 	_server_lobbies[code] = {
 		"host_id": peer_id, "mode": mode, "state": "lobby", "players": {peer_id: record},
-		"health": {}, "alive": {}, "scores": {TEAM_RED: 0, TEAM_BLUE: 0}, "stats": {}, "ends_at": 0,
-		"next_match_at": 0, "round_number": 0,
+		"health": {}, "shield": {}, "alive": {}, "scores": {TEAM_RED: 0, TEAM_BLUE: 0}, "stats": {}, "ends_at": 0,
+		"next_match_at": 0, "round_number": 0, "snitches": {}, "snitch_seq": 0,
+		"snitch_sync_accum": 0.0,
 	}
 	_peer_lobbies[peer_id] = code
 	_broadcast_lobby(code)
@@ -321,7 +364,10 @@ func _request_profile_update(requested_info: Dictionary) -> void:
 	if not lobby_players.has(peer_id):
 		return
 	var previous: Dictionary = lobby_players[peer_id]
-	lobby_players[peer_id] = _make_player_record(peer_id, requested_info, str(previous.team))
+	var replacement := _make_player_record(peer_id, requested_info, str(previous.team))
+	replacement.power = str(previous.get("power", ""))
+	replacement.invisible = bool(previous.get("invisible", false))
+	lobby_players[peer_id] = replacement
 	lobby.players = lobby_players
 	_server_lobbies[code] = lobby
 	_broadcast_lobby(code)
@@ -366,14 +412,23 @@ func _server_begin_round(code: String) -> void:
 			record.team = TEAM_FFA
 			lobby_players[member] = record
 	var health := {}
+	var shield := {}
 	var alive := {}
 	var stats := {}
 	for member_value in lobby_players.keys():
 		var member := int(member_value)
-		health[member] = 100.0
+		health[member] = MAX_HEALTH
+		shield[member] = MAX_SHIELD
 		alive[member] = true
 		stats[member] = {"kills": 0, "deaths": 0}
+		var record := (lobby_players[member] as Dictionary).duplicate(true)
+		record.power = ""
+		record.invisible = false
+		record.health = MAX_HEALTH
+		record.shield = MAX_SHIELD
+		lobby_players[member] = record
 	lobby.health = health
+	lobby.shield = shield
 	lobby.alive = alive
 	lobby.stats = stats
 	lobby.scores = {TEAM_RED: 0, TEAM_BLUE: 0}
@@ -382,9 +437,15 @@ func _server_begin_round(code: String) -> void:
 	lobby.next_match_at = 0
 	lobby.round_number = int(lobby.get("round_number", 0)) + 1
 	lobby.players = lobby_players
+	lobby.snitches = {}
+	lobby.snitch_seq = 0
+	lobby.snitch_sync_accum = 0.0
+	for index in Powers.ORDER.size():
+		_server_spawn_snitch(lobby, Powers.ORDER[index], SNITCH_ANCHORS[index])
 	_server_lobbies[code] = lobby
 	for member_value in lobby_players.keys():
 		_client_match_started.rpc_id(int(member_value), str(lobby.mode), lobby_players.duplicate(true))
+		_client_snitch_snapshot.rpc_id(int(member_value), (lobby.snitches as Dictionary).duplicate(true))
 	_broadcast_public_lobbies()
 
 
@@ -416,12 +477,24 @@ func _submit_shot(origin: Vector3, direction: Vector3, shot_data: Dictionary) ->
 	var lobby: Dictionary = _server_lobbies[code]
 	if not bool((lobby.alive as Dictionary).get(sender, false)):
 		return
+	var record: Dictionary = (lobby.players as Dictionary).get(sender, {})
+	var power_id := str(record.get("power", ""))
+	if power_id == "invisibility" and bool(record.get("invisible", false)):
+		return
+	var power := Powers.get_power(power_id)
+	if power.is_empty():
+		power = {
+			"damage": Powers.BASE_DAMAGE, "projectile_speed": 90.0,
+			"splash_radius": 0.0, "splash_mult": 0.0,
+			"projectile_kind": "bullet", "color": Color.WHITE,
+		}
 	var safe_data := {
-		"damage": clampf(float(shot_data.get("damage", 0.0)), 0.0, 100.0),
-		"speed": clampf(float(shot_data.get("speed", 90.0)), 1.0, 120.0),
-		"splash_radius": clampf(float(shot_data.get("splash_radius", 0.0)), 0.0, 10.0),
-		"splash_mult": clampf(float(shot_data.get("splash_mult", 0.0)), 0.0, 1.0),
-		"color": shot_data.get("color", Color.WHITE),
+		"damage": float(power.get("damage", Powers.BASE_DAMAGE)),
+		"speed": float(power.get("projectile_speed", 90.0)),
+		"splash_radius": float(power.get("splash_radius", 0.0)),
+		"splash_mult": float(power.get("splash_mult", 0.0)),
+		"projectile_kind": str(power.get("projectile_kind", "bullet")),
+		"color": power.get("color", shot_data.get("color", Color.WHITE)),
 	}
 	for member_value in (lobby.players as Dictionary).keys():
 		var member := int(member_value)
@@ -445,13 +518,116 @@ func _submit_hit(victim_peer_id: int, damage: float) -> void:
 	if str(lobby.mode) == "TEAM_DEATH_MATCH":
 		if str((lobby_players[attacker] as Dictionary).team) == str((lobby_players[victim_peer_id] as Dictionary).team):
 			return
-	var health: Dictionary = lobby.health
-	health[victim_peer_id] = maxf(0.0, float(health.get(victim_peer_id, 100.0)) - clampf(damage, 0.0, 100.0))
-	lobby.health = health
+	var max_damage := _server_power_damage(lobby_players, attacker)
+	_server_apply_damage(code, victim_peer_id, attacker, minf(damage, max_damage))
+
+
+@rpc("any_peer", "call_remote", "reliable", 4)
+func _submit_self_damage(damage: float) -> void:
+	if not _dedicated_server:
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	var code := str(_peer_lobbies.get(sender, ""))
+	if not _server_match_has_peer(code, sender):
+		return
+	var lobby: Dictionary = _server_lobbies[code]
+	var record: Dictionary = (lobby.players as Dictionary).get(sender, {})
+	if str(record.get("power", "")) != "rocket_launcher":
+		return
+	_server_apply_damage(code, sender, sender, minf(damage, 90.0))
+
+
+@rpc("any_peer", "call_remote", "reliable", 5)
+func _submit_snitch_hit(ball_id: int, damage: float) -> void:
+	if not _dedicated_server:
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	var code := str(_peer_lobbies.get(sender, ""))
+	if not _server_match_has_peer(code, sender):
+		return
+	var lobby: Dictionary = _server_lobbies[code]
+	if not bool((lobby.alive as Dictionary).get(sender, false)):
+		return
+	var balls: Dictionary = lobby.snitches
+	if not balls.has(ball_id):
+		return
+	var ball: Dictionary = (balls[ball_id] as Dictionary).duplicate(true)
+	ball.health = maxf(0.0, float(ball.get("health", SNITCH_HEALTH)) - minf(damage, _server_power_damage(lobby.players, sender)))
+	if float(ball.health) > 0.0:
+		balls[ball_id] = ball
+		lobby.snitches = balls
+		_server_lobbies[code] = lobby
+		_broadcast_snitches(code)
+		return
+	balls.erase(ball_id)
+	lobby.snitches = balls
+	var records: Dictionary = lobby.players
+	var player_record := (records[sender] as Dictionary).duplicate(true)
+	var previous_power := str(player_record.get("power", ""))
+	player_record.power = str(ball.get("power", ""))
+	player_record.invisible = false
+	records[sender] = player_record
+	lobby.players = records
+	if not previous_power.is_empty():
+		_server_spawn_snitch(lobby, previous_power, ball.get("position", Vector3.ZERO) + Vector3(0.0, 1.0, 0.0))
 	_server_lobbies[code] = lobby
-	_broadcast_health(code, victim_peer_id, float(health[victim_peer_id]))
-	if float(health[victim_peer_id]) <= 0.0:
-		_server_eliminate(code, victim_peer_id, attacker)
+	_broadcast_power(code, sender)
+	_broadcast_snitches(code)
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func _request_invisibility(enabled: bool) -> void:
+	if not _dedicated_server:
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	var code := str(_peer_lobbies.get(sender, ""))
+	if not _server_match_has_peer(code, sender):
+		return
+	var lobby: Dictionary = _server_lobbies[code]
+	var records: Dictionary = lobby.players
+	var record: Dictionary = (records[sender] as Dictionary).duplicate(true)
+	if str(record.get("power", "")) != "invisibility":
+		return
+	record.invisible = enabled
+	records[sender] = record
+	lobby.players = records
+	_server_lobbies[code] = lobby
+	_broadcast_power(code, sender)
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func _request_power_trade(station_id: int) -> void:
+	if not _dedicated_server or station_id < 0 or station_id >= STATION_POSITIONS.size():
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	var code := str(_peer_lobbies.get(sender, ""))
+	if not _server_match_has_peer(code, sender):
+		return
+	var lobby: Dictionary = _server_lobbies[code]
+	if not bool((lobby.alive as Dictionary).get(sender, false)):
+		return
+	var records: Dictionary = lobby.players
+	var record: Dictionary = (records[sender] as Dictionary).duplicate(true)
+	var traded_power := str(record.get("power", ""))
+	if traded_power.is_empty():
+		return
+	record.power = ""
+	record.invisible = false
+	record.health = MAX_HEALTH
+	record.shield = MAX_SHIELD
+	records[sender] = record
+	lobby.players = records
+	var health: Dictionary = lobby.health
+	var shield: Dictionary = lobby.shield
+	health[sender] = MAX_HEALTH
+	shield[sender] = MAX_SHIELD
+	lobby.health = health
+	lobby.shield = shield
+	_server_spawn_snitch(lobby, traded_power, STATION_POSITIONS[station_id] + Vector3.UP * 3.0)
+	_server_lobbies[code] = lobby
+	_broadcast_power(code, sender)
+	_broadcast_vitals(code, sender)
+	_broadcast_snitches(code)
 
 
 @rpc("authority", "call_remote", "reliable")
@@ -502,6 +678,36 @@ func _client_shot(peer_id: int, origin: Vector3, direction: Vector3, shot_data: 
 @rpc("authority", "call_remote", "reliable", 3)
 func _client_health(peer_id: int, next_health: float) -> void:
 	health_changed.emit(peer_id, next_health)
+	var record: Dictionary = players.get(peer_id, {})
+	var next_shield := float(record.get("shield", MAX_SHIELD))
+	record.health = next_health
+	players[peer_id] = record
+	vitals_changed.emit(peer_id, next_health, next_shield)
+
+
+@rpc("authority", "call_remote", "reliable", 4)
+func _client_vitals(peer_id: int, next_health: float, next_shield: float) -> void:
+	var record: Dictionary = players.get(peer_id, {})
+	record.health = next_health
+	record.shield = next_shield
+	players[peer_id] = record
+	health_changed.emit(peer_id, next_health)
+	vitals_changed.emit(peer_id, next_health, next_shield)
+
+
+@rpc("authority", "call_remote", "reliable", 5)
+func _client_power(peer_id: int, power_id: String, invisible: bool) -> void:
+	var record: Dictionary = players.get(peer_id, {})
+	record.power = power_id
+	record.invisible = invisible
+	players[peer_id] = record
+	power_changed.emit(peer_id, power_id, invisible)
+
+
+@rpc("authority", "call_remote", "unreliable_ordered", 6)
+func _client_snitch_snapshot(snapshot: Dictionary) -> void:
+	snitches = snapshot.duplicate(true)
+	snitch_snapshot_changed.emit(snitches.duplicate(true))
 
 
 @rpc("authority", "call_remote", "reliable")
@@ -545,16 +751,18 @@ func _server_eliminate(code: String, victim: int, attacker: int) -> void:
 	alive[victim] = false
 	lobby.alive = alive
 	var stats: Dictionary = lobby.stats
-	var attacker_stats: Dictionary = stats.get(attacker, {"kills": 0, "deaths": 0})
-	attacker_stats.kills = int(attacker_stats.kills) + 1
-	stats[attacker] = attacker_stats
+	var valid_kill := attacker != victim and (lobby.players as Dictionary).has(attacker)
+	if valid_kill:
+		var attacker_stats: Dictionary = stats.get(attacker, {"kills": 0, "deaths": 0})
+		attacker_stats.kills = int(attacker_stats.kills) + 1
+		stats[attacker] = attacker_stats
 	var victim_stats: Dictionary = stats.get(victim, {"kills": 0, "deaths": 0})
 	victim_stats.deaths = int(victim_stats.deaths) + 1
 	stats[victim] = victim_stats
 	lobby.stats = stats
 	var reached_kill_limit := false
 	var scoring_team := ""
-	if str(lobby.mode) == "TEAM_DEATH_MATCH":
+	if str(lobby.mode) == "TEAM_DEATH_MATCH" and valid_kill:
 		var scores: Dictionary = lobby.scores
 		var attacker_team := str(((lobby.players as Dictionary)[attacker] as Dictionary).team)
 		scores[attacker_team] = int(scores.get(attacker_team, 0)) + 1
@@ -582,15 +790,110 @@ func _server_respawn_later(code: String, peer_id: int) -> void:
 		return
 	var lobby: Dictionary = _server_lobbies[code]
 	var health: Dictionary = lobby.health
+	var shield: Dictionary = lobby.shield
 	var alive: Dictionary = lobby.alive
-	health[peer_id] = 100.0
+	health[peer_id] = MAX_HEALTH
+	shield[peer_id] = MAX_SHIELD
 	alive[peer_id] = true
 	lobby.health = health
+	lobby.shield = shield
 	lobby.alive = alive
+	var records: Dictionary = lobby.players
+	var record := (records[peer_id] as Dictionary).duplicate(true)
+	record.health = MAX_HEALTH
+	record.shield = MAX_SHIELD
+	record.invisible = false
+	records[peer_id] = record
+	lobby.players = records
 	_server_lobbies[code] = lobby
 	for member_value in (lobby.players as Dictionary).keys():
-		_client_health.rpc_id(int(member_value), peer_id, 100.0)
+		_client_vitals.rpc_id(int(member_value), peer_id, MAX_HEALTH, MAX_SHIELD)
+		_client_power.rpc_id(int(member_value), peer_id, str(record.get("power", "")), false)
 		_client_respawned.rpc_id(int(member_value), peer_id)
+
+
+func _server_apply_damage(code: String, victim: int, attacker: int, amount: float) -> void:
+	if not _server_match_has_peer(code, victim) or amount <= 0.0:
+		return
+	var lobby: Dictionary = _server_lobbies[code]
+	if not bool((lobby.alive as Dictionary).get(victim, false)):
+		return
+	var health: Dictionary = lobby.health
+	var shield: Dictionary = lobby.shield
+	var remaining := amount
+	var current_shield := float(shield.get(victim, MAX_SHIELD))
+	var shield_damage := minf(current_shield, remaining)
+	current_shield -= shield_damage
+	remaining -= shield_damage
+	var current_health := maxf(0.0, float(health.get(victim, MAX_HEALTH)) - remaining)
+	shield[victim] = current_shield
+	health[victim] = current_health
+	lobby.health = health
+	lobby.shield = shield
+	var records: Dictionary = lobby.players
+	var record := (records[victim] as Dictionary).duplicate(true)
+	record.health = current_health
+	record.shield = current_shield
+	records[victim] = record
+	lobby.players = records
+	_server_lobbies[code] = lobby
+	_broadcast_vitals(code, victim)
+	if current_health <= 0.0:
+		_server_eliminate(code, victim, attacker)
+
+
+func _server_power_damage(lobby_players: Dictionary, peer_id: int) -> float:
+	var record: Dictionary = lobby_players.get(peer_id, {})
+	var power := Powers.get_power(str(record.get("power", "")))
+	return float(power.get("damage", Powers.BASE_DAMAGE))
+
+
+func _server_spawn_snitch(lobby: Dictionary, power_id: String, anchor: Vector3) -> void:
+	if not Powers.is_valid(power_id):
+		return
+	var next_id := int(lobby.get("snitch_seq", 0)) + 1
+	lobby.snitch_seq = next_id
+	var balls: Dictionary = lobby.get("snitches", {})
+	balls[next_id] = {
+		"id": next_id,
+		"power": power_id,
+		"health": SNITCH_HEALTH,
+		"anchor": anchor,
+		"position": anchor,
+		"phase": randf_range(0.0, TAU),
+		"speed": randf_range(0.55, 0.9),
+		"radius": randf_range(7.0, 12.0),
+	}
+	lobby.snitches = balls
+
+
+func _server_tick_snitches(code: String, delta: float) -> void:
+	if not _server_lobbies.has(code):
+		return
+	var lobby: Dictionary = _server_lobbies[code]
+	var balls: Dictionary = lobby.get("snitches", {})
+	var time := float(Time.get_ticks_msec()) / 1000.0
+	for id_value in balls.keys():
+		var id := int(id_value)
+		var ball := (balls[id] as Dictionary).duplicate(true)
+		var anchor: Vector3 = ball.get("anchor", Vector3.ZERO)
+		var phase := float(ball.get("phase", 0.0))
+		var speed := float(ball.get("speed", 0.7))
+		var radius := float(ball.get("radius", 8.0))
+		var angle := time * speed + phase
+		ball.position = anchor + Vector3(
+			cos(angle) * radius,
+			sin(time * speed * 2.3 + phase) * 2.4,
+			sin(angle * 1.17) * radius * 0.72)
+		balls[id] = ball
+	lobby.snitches = balls
+	lobby.snitch_sync_accum = float(lobby.get("snitch_sync_accum", 0.0)) + delta
+	var should_sync := float(lobby.snitch_sync_accum) >= SNITCH_SYNC_INTERVAL
+	if should_sync:
+		lobby.snitch_sync_accum = 0.0
+	_server_lobbies[code] = lobby
+	if should_sync:
+		_broadcast_snitches(code)
 
 
 func _check_survival_winner(code: String) -> void:
@@ -686,6 +989,35 @@ func _broadcast_health(code: String, peer_id: int, next_health: float) -> void:
 		_client_health.rpc_id(int(member_value), peer_id, next_health)
 
 
+func _broadcast_vitals(code: String, peer_id: int) -> void:
+	if not _server_lobbies.has(code):
+		return
+	var lobby: Dictionary = _server_lobbies[code]
+	var next_health := float((lobby.health as Dictionary).get(peer_id, MAX_HEALTH))
+	var next_shield := float((lobby.shield as Dictionary).get(peer_id, MAX_SHIELD))
+	for member_value in (lobby.players as Dictionary).keys():
+		_client_vitals.rpc_id(int(member_value), peer_id, next_health, next_shield)
+
+
+func _broadcast_power(code: String, peer_id: int) -> void:
+	if not _server_lobbies.has(code):
+		return
+	var lobby: Dictionary = _server_lobbies[code]
+	var record: Dictionary = (lobby.players as Dictionary).get(peer_id, {})
+	for member_value in (lobby.players as Dictionary).keys():
+		_client_power.rpc_id(int(member_value), peer_id,
+			str(record.get("power", "")), bool(record.get("invisible", false)))
+
+
+func _broadcast_snitches(code: String) -> void:
+	if not _server_lobbies.has(code):
+		return
+	var lobby: Dictionary = _server_lobbies[code]
+	var snapshot: Dictionary = (lobby.get("snitches", {}) as Dictionary).duplicate(true)
+	for member_value in (lobby.players as Dictionary).keys():
+		_client_snitch_snapshot.rpc_id(int(member_value), snapshot)
+
+
 func _server_match_has_peer(code: String, peer_id: int) -> bool:
 	return (not code.is_empty() and _server_lobbies.has(code)
 		and str((_server_lobbies[code] as Dictionary).get("state", "")) == "match"
@@ -700,8 +1032,11 @@ func _server_remove_peer(peer_id: int) -> void:
 	var lobby: Dictionary = _server_lobbies[code]
 	var previous_state := str(lobby.get("state", ""))
 	var lobby_players: Dictionary = lobby.players
+	var leaving_record: Dictionary = lobby_players.get(peer_id, {})
+	var dropped_power := str(leaving_record.get("power", ""))
 	lobby_players.erase(peer_id)
 	(lobby.health as Dictionary).erase(peer_id)
+	(lobby.shield as Dictionary).erase(peer_id)
 	(lobby.alive as Dictionary).erase(peer_id)
 	(lobby.stats as Dictionary).erase(peer_id)
 	_peer_lobbies.erase(peer_id)
@@ -712,12 +1047,16 @@ func _server_remove_peer(peer_id: int) -> void:
 	if int(lobby.host_id) == peer_id:
 		lobby.host_id = int(lobby_players.keys()[0])
 	lobby.players = lobby_players
+	if previous_state == "match" and not dropped_power.is_empty():
+		_server_spawn_snitch(lobby, dropped_power, Vector3(0.0, 7.0, 0.0))
 	_server_lobbies[code] = lobby
 	if previous_state == "lobby":
 		_broadcast_lobby(code)
 	elif previous_state == "match" or previous_state == "intermission":
 		for member_value in lobby_players.keys():
 			_client_player_left.rpc_id(int(member_value), peer_id)
+		if previous_state == "match" and not dropped_power.is_empty():
+			_broadcast_snitches(code)
 		if lobby_players.size() <= 1:
 			_return_match_to_menu(code, "The match ended because too few players remain.")
 			return
@@ -792,6 +1131,7 @@ func _make_player_record(peer_id: int, info: Dictionary, team: String) -> Dictio
 	return {
 		"peer_id": peer_id, "id": str(peer_id), "name": _clean_name(str(info.get("name", "Player"))),
 		"team": team, "source": "human", "customization": _clean_customization(info.get("customization", {})),
+		"health": MAX_HEALTH, "shield": MAX_SHIELD, "power": "", "invisible": false,
 	}
 
 
@@ -821,6 +1161,7 @@ func _clean_customization(value: Variant) -> Dictionary:
 
 func _clear_client_lobby() -> void:
 	players.clear()
+	snitches.clear()
 	current_lobby_code = ""
 	current_game_mode = ""
 	current_host_id = 0
