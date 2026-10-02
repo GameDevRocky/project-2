@@ -5,3 +5,6 @@
 # Web export output — built automatically by the GitHub Actions workflow,
 # never committed by hand.
 /build/
+
+# Python bytecode written when Blender imports tools/blender/paintkit.py.
+__pycache__/

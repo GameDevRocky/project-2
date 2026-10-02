@@ -22,10 +22,23 @@ extends CharacterBody3D
 ## adding a new ability later is a change in traits.gd plus one line here, and
 ## it is impossible for a stale buff to linger after a swap - the live numbers
 ## are rebuilt from scratch, not adjusted.
+##
+## ONLINE: SHIELD AND POWERS (Rocklyn's online branch)
+## Online, you have 100 shield on top of 100 health (damage takes shield
+## first), and the server hands you a POWER when you shoot down a flying power
+## ball (scripts/power_abilities.gd). _apply_power() rebuilds your gun and
+## movement from the base numbers and that power, the same way _apply_pair()
+## does for pairs. The gun MODEL in your hands follows the power too
+## (scripts/weapons.gd), so other players can see what you picked up.
 
 const Traits = preload("res://scripts/traits.gd")
 const Projectile = preload("res://scripts/projectile.gd")
 const CustomizationData = preload("res://scripts/character_customization_data.gd")
+const PaintKit = preload("res://scripts/visual/paint_kit.gd")
+const PaintFx = preload("res://scripts/visual/paint_fx.gd")
+const ShaderWarmup = preload("res://scripts/visual/shader_warmup.gd")
+const GunSkins = preload("res://scripts/visual/gun_skins.gd")
+const Weapons = preload("res://scripts/weapons.gd")
 const Powers = preload("res://scripts/power_abilities.gd")
 
 
@@ -47,6 +60,14 @@ signal died
 
 ## Fired when a new pair is inherited, carrying the pair data for the HUD popup.
 signal pair_inherited(pair: Dictionary)
+
+## Fired when one of YOUR globs damaged something, so the HUD can flash a hit
+## marker on the crosshair. Feedback only: the damage has already happened in
+## projectile.gd exactly as before; this just reports it.
+signal hit_confirmed
+
+## Fired when the server gives you a power, takes it away, or turns your
+## invisibility on or off. The HUD shows the power card from it.
 signal power_changed(power_id: String, invisible: bool)
 
 
@@ -57,6 +78,7 @@ signal power_changed(power_id: String, invisible: bool)
 
 ## Hit points at full health.
 @export var max_health: float = 100.0
+## Online shield, on top of health. Damage removes shield first.
 @export var max_shield: float = 100.0
 
 ## Ground movement speed in metres per second, before any pair multiplier.
@@ -73,7 +95,8 @@ signal power_changed(power_id: String, invisible: bool)
 ## Seconds between shots before any pair multiplier. Smaller = faster gun.
 @export var base_fire_interval: float = 0.28
 
-## Health removed from an enemy by one direct glob, before multipliers.
+## Health removed by one direct glob, before multipliers. Online this is the
+## 4.4 of an ordinary paint bullet (scripts/power_abilities.gd).
 @export var base_damage: float = Powers.BASE_DAMAGE
 
 ## How much paint the reservoir holds. One shot costs one unit.
@@ -96,6 +119,7 @@ signal power_changed(power_id: String, invisible: bool)
 ## Maximum right-stick turn speed in radians per second.
 @export var controller_look_speed: float = 2.8
 
+
 # --- Live numbers, rebuilt by _apply_pair() ---------------------------------
 var _speed: float
 var _jump_velocity: float
@@ -116,6 +140,7 @@ var _projectile_kind := "bullet"
 var health: float
 var shield: float
 var ammo: float
+## The power the server gave you ("" = none), and whether you are invisible.
 var current_power := ""
 var power_invisible := false
 
@@ -129,7 +154,7 @@ var pair: Dictionary = {}
 ## Counts down to zero; you may fire when it reaches zero.
 var _fire_cooldown: float = 0.0
 
-## Seconds since the last shot, compared against ammo_regen_delay.
+## Seconds since the last shot, compared against the gun's refill delay.
 var _since_fired: float = 999.0
 
 ## Seconds since last taking damage, compared against the Ghost pair's delay.
@@ -137,6 +162,11 @@ var _since_hurt: float = 999.0
 
 ## Set true on death so input and shooting stop immediately.
 var _dead: bool = false
+
+## True while the pause menu is open. Online matches cannot really stop, so
+## the world carries on; this just stops YOUR inputs - no looking, moving or
+## shooting - until you resume.
+var _paused: bool = false
 
 ## Whether the game currently considers the mouse grabbed.
 ##
@@ -153,11 +183,39 @@ var _mouse_captured: bool = false
 
 # --- Nodes built in _ready() ------------------------------------------------
 var _camera: Camera3D
-var _view_model: Node3D
-var _muzzle: MeshInstance3D
 var _camera_home := Vector3(0.0, 1.6, 0.0)
+var _view_model: Node3D
+## The gun model inside _view_model. Swapped when a new gun is equipped.
+var _gun: Node3D
+var _muzzle: MeshInstance3D
+
+## Parts of the Paint Blaster model (models/generated/paint_blaster.glb) that
+## move. All purely visual: they READ ammo, they never change it.
+var _skin_band: MeshInstance3D
+var _gun_fill: Node3D
+var _gun_needle: Node3D
+var _gun_regulator: Node3D
+## A little puff of paint thrown from the bristles on each shot.
+var _muzzle_puff: CPUParticles3D
+
+## Where globs leave the gun, in view-model space. Unchanged since the
+## original box gun; the Paint Blaster model is built around it.
+const MUZZLE_POINT := Vector3(0.0, 0.0, -0.36)
+const VIEW_GUN_SCALE := 1.15
+
+## The normal field of view (the GDD's wide 105 degrees).
+const BASE_FOV := 105.0
+## A render layer only for your OWN power halo. Your camera (and the spectator
+## camera) leave this layer out, so the ring 0.7 m above your eyes never fills
+## the screen when you look up. Other players see the halo on their copy of
+## you (remote_player.gd), which is on the normal layer.
+const OWN_HALO_LAYER := 1 << 10
+## Which gun model is in the view-model now, so it is only rebuilt on change.
+var _gun_model_name := ""
+## True while dead and watching someone (the match controller's spectator
+## camera draws the view; this only parks the body).
 var _spectating := false
-var _spectate_target: Node3D
+## A glowing ring over your head while you carry a power.
 var _power_halo: MeshInstance3D
 
 ## Where the view-model sits when you are perfectly still. Sway and bob are
@@ -211,17 +269,6 @@ func _set_mouse_captured(captured: bool) -> void:
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 
 
-func _process(delta: float) -> void:
-	if not _spectating or not is_instance_valid(_spectate_target):
-		return
-	var forward := -_spectate_target.global_basis.z
-	var focus := _spectate_target.global_position + Vector3.UP * 1.35 + forward * 1.8
-	var desired := _spectate_target.global_position + Vector3.UP * 2.25 - forward * 4.5
-	_camera.global_position = _camera.global_position.lerp(
-		desired, clampf(delta * 8.0, 0.0, 1.0))
-	_camera.look_at(focus, Vector3.UP)
-
-
 ## Builds the collision capsule. A capsule - a cylinder with domed ends - is the
 ## standard player shape in every 3D engine because the rounded bottom slides
 ## over small bumps and stair edges instead of catching on them the way a box
@@ -254,20 +301,111 @@ func _build_camera() -> void:
 	# The GDD asks for a wide 105 degree field of view. Wide FOV shows more of
 	# the arena at once and makes movement feel faster, at the cost of some
 	# distortion at the screen edges.
-	_camera.fov = 105.0
+	_camera.fov = BASE_FOV
 	# current = true makes this the camera the game actually renders from.
 	_camera.current = true
+	_camera.cull_mask &= ~OWN_HALO_LAYER
 	add_child(_camera)
 
 
 ## The paintbrush-rifle you see in your hands. It is parented to the CAMERA,
 ## not to the player body, so it turns with your view for free - if it hung off
 ## the body it would stay level while you looked up and down.
+##
+## The gun is the generated Paint Blaster model. Its `Muzzle` part (the bristle
+## tuft) has its origin exactly where the old white cube sat, (0, 0, -0.36) in
+## view-model space, so globs spawn from the same point as before and the
+## aim-toward-the-crosshair maths in _shoot() is unchanged. If the model file is
+## missing, the original three-box gun is built instead.
 func _build_view_model() -> void:
 	_view_model = Node3D.new()
 	_view_model.position = _view_model_home
 	_camera.add_child(_view_model)
+	_build_gun()
+	# Draw every effect material once while the match loads (see the script),
+	# so the web build does not freeze at the first hit of the match.
+	var warmup := Node3D.new()
+	warmup.set_script(ShaderWarmup)
+	_camera.add_child(warmup)
 
+
+## Builds the model of the gun you carry inside the view-model, replacing any
+## previous one. Each gun model (models/generated/) has a `Muzzle` part whose
+## origin is where shots leave it, and a `Fill` part showing the paint left.
+func _build_gun() -> void:
+	if _gun != null:
+		_gun.queue_free()
+	_gun = null
+	_muzzle = null
+	_skin_band = null
+	_gun_fill = null
+	_gun_needle = null
+	_gun_regulator = null
+	_muzzle_puff = null
+
+	# Which gun model: the one that goes with your power (scripts/weapons.gd).
+	var look := Weapons.for_power(current_power)
+	_gun_model_name = str(look.model)
+	var model := PaintKit.instance(_gun_model_name)
+	if model == null:
+		model = PaintKit.instance("paint_blaster")
+	if model == null:
+		_build_box_gun()
+		_apply_menu_customization()
+		return
+	_gun = model
+	# Drawn 1.15x bigger so it reads as a chunky tool in first person. The
+	# Paint Blaster is scaled AROUND its muzzle point, so its Muzzle node (and
+	# so the glob spawn point) stays exactly at (0, 0, -0.36).
+	model.scale = Vector3.ONE * VIEW_GUN_SCALE
+	if model.scene_file_path.get_file() == "paint_blaster.glb":
+		model.position = MUZZLE_POINT * (1.0 - VIEW_GUN_SCALE)
+	else:
+		model.position = look.get("view_offset", Vector3.ZERO)
+	_view_model.add_child(model)
+	# The first-person gun must not throw a shadow onto the floor in front
+	# of you - it is not really there in the world.
+	PaintKit.set_shadows(model, false)
+	_muzzle = PaintKit.part(model, "Muzzle") as MeshInstance3D
+	_skin_band = PaintKit.part(model, "SkinBand") as MeshInstance3D
+	_gun_fill = PaintKit.part(model, "Fill")
+	_gun_needle = PaintKit.part(model, "Needle")
+	_gun_regulator = PaintKit.part(model, "Regulator")
+	if _muzzle == null:
+		# A model without a Muzzle part: fire from the old muzzle point.
+		_muzzle = MeshInstance3D.new()
+		_muzzle.position = MUZZLE_POINT
+		_view_model.add_child(_muzzle)
+	# The bristles (or nib, prism, bell...), the paint in the tank and the
+	# drips all show the pair colour. They share ONE material, which
+	# _apply_pair() repaints, so the existing "repaint the muzzle" code colours
+	# all three at once.
+	var pair_mat := StandardMaterial3D.new()
+	pair_mat.roughness = 0.3
+	pair_mat.emission_enabled = true
+	pair_mat.emission_energy_multiplier = 0.5
+	_muzzle.material_override = pair_mat
+	for part_name in ["Fill", "PaintDrips"]:
+		var painted := PaintKit.part(model, part_name) as GeometryInstance3D
+		if painted != null:
+			painted.material_override = pair_mat
+	# The muzzle puff rides on the muzzle (local_coords), so it stays with the
+	# gun as you turn instead of hanging in the air behind you.
+	_muzzle_puff = PaintFx.make(Color.WHITE, 6, 1.6, 0.3, 0.16)
+	_muzzle_puff.local_coords = true
+	_muzzle_puff.direction = Vector3.FORWARD
+	_muzzle_puff.spread = 28.0
+	_muzzle_puff.gravity = Vector3.ZERO
+	_muzzle.add_child(_muzzle_puff)
+	_apply_menu_customization()
+	if not pair.is_empty():
+		_paint_muzzle()
+	_view_model.visible = not power_invisible and not _spectating
+
+
+## The original prototype gun: three boxes and a bristle cube. Only used if the
+## generated model is missing.
+func _build_box_gun() -> void:
 	# The rifle body - a charcoal block, the GDD's "structural accent".
 	_view_model.add_child(_make_box(
 		Vector3(0.09, 0.1, 0.55), Vector3(0.0, 0.0, 0.0), Traits.CHARCOAL))
@@ -275,31 +413,38 @@ func _build_view_model() -> void:
 	_view_model.add_child(_make_box(
 		Vector3(0.07, 0.2, 0.09), Vector3(0.0, -0.13, 0.14), Traits.CHARCOAL))
 	# A teal band, so the gun is not one flat slab of dark.
-	_view_model.add_child(_make_box(
-		Vector3(0.1, 0.045, 0.12), Vector3(0.0, 0.035, -0.06), Traits.TEAL))
-
-	# The bristle head at the muzzle. This one is stored so its colour can be
-	# repainted to match whatever pair you have inherited - it is the clearest
-	# possible readout of "what am I right now", sitting in the middle of the
-	# screen where you are already looking.
+	_skin_band = _make_box(Vector3(0.1, 0.045, 0.12), Vector3(0.0, 0.035, -0.06), Traits.TEAL)
+	_view_model.add_child(_skin_band)
+	# The bristle head at the muzzle, repainted to the inherited pair's colour.
 	_muzzle = _make_box(Vector3(0.12, 0.13, 0.16), Vector3(0.0, 0.0, -0.36), Traits.WHITE)
-	# A soft glow in the pair's colour, so the brush head stays a clear, bright
-	# swatch whichever way you are facing the sun. _apply_pair() keeps the glow
-	# colour in step with the paint colour.
 	var muzzle_mat: StandardMaterial3D = _muzzle.material_override
 	muzzle_mat.emission_enabled = true
 	muzzle_mat.emission = Traits.WHITE
 	muzzle_mat.emission_energy_multiplier = 0.5
 	_view_model.add_child(_muzzle)
-	_apply_menu_customization()
 
 
 func _apply_menu_customization() -> void:
 	if customization.is_empty():
 		return
+	var gun_skin_index := int(customization.get("gun_skin", customization.get("GUN SKINS", 0)))
+	# A gun model: the gun skin restyles the whole gun (body, trim, band,
+	# grip). The bristles and tank keep showing your pair colour.
+	if _gun != null:
+		GunSkins.apply(_gun, gun_skin_index, false)
+		return
+	# Fallback box gun: only its band takes the skin colour.
 	var palette := [Color("#FF6FAE"), Color("#63D9C7"), Color("#54C9E8"), Color("#F5C45E"), Color("#A78BFA"), Color("#F5F4F0"), Color("#FF867C"), Color("#79C991"), Color("#70BCEB"), Color("#C18B67")]
-	var band := _view_model.get_child(2) as MeshInstance3D
+	# Found by name when the gun was built (it used to be "child number 2",
+	# which silently broke as soon as the gun's parts changed).
+	var band := _skin_band
+	if band == null:
+		return
 	var gun_mat := band.material_override as StandardMaterial3D
+	if gun_mat == null:
+		gun_mat = StandardMaterial3D.new()
+		gun_mat.roughness = 0.4
+		band.material_override = gun_mat
 	var gun_skin := int(customization.get("gun_skin", customization.get("GUN SKINS", 0)))
 	gun_mat.albedo_color = palette[gun_skin % palette.size()]
 	var material_path := CustomizationData.gun_material_path(gun_skin)
@@ -327,6 +472,9 @@ func _make_box(box_size: Vector3, at: Vector3, box_color: Color) -> MeshInstance
 	return node
 
 
+## A glowing ring over your head while you carry a power, in the power's
+## colour. It sits above your own camera, out of your view; other players see
+## the matching ring on their copy of you (remote_player.gd).
 func _build_power_halo() -> void:
 	_power_halo = MeshInstance3D.new()
 	_power_halo.name = "PowerHalo"
@@ -343,6 +491,7 @@ func _build_power_halo() -> void:
 	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	_power_halo.material_override = material
 	_power_halo.visible = false
+	_power_halo.layers = OWN_HALO_LAYER
 	add_child(_power_halo)
 
 
@@ -351,7 +500,7 @@ func _build_power_halo() -> void:
 ## discrete events - reading it on a timer would drop movement on slow frames
 ## and make the aim feel like it is skipping.
 func _unhandled_input(event: InputEvent) -> void:
-	if _dead:
+	if _dead or _paused:
 		return
 
 	if event is InputEventMouseMotion and _mouse_captured:
@@ -378,6 +527,8 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("ui_cancel"):
 		_set_mouse_captured(false)
 
+	# Right mouse / left shoulder: the Invisibility power's on/off switch. The
+	# server decides; it answers through set_network_power().
 	if event.is_action_pressed("toggle_power") and current_power == "invisibility":
 		NetworkSession.request_invisibility(not power_invisible)
 
@@ -387,13 +538,16 @@ func _physics_process(delta: float) -> void:
 		return
 
 	_tick_timers(delta)
-	_look_with_controller(delta)
+	if not _paused:
+		_look_with_controller(delta)
 	_move(delta)
-	_shoot(delta)
+	if not _paused:
+		_shoot(delta)
 	_regenerate(delta)
 	_animate_view_model(delta)
 
 
+## Right-stick aiming for a controller (Rocklyn's online branch).
 func _look_with_controller(delta: float) -> void:
 	var look := Input.get_vector("look_left", "look_right", "look_up", "look_down", 0.2)
 	if look.is_zero_approx():
@@ -418,13 +572,16 @@ func _move(delta: float) -> void:
 	if not is_on_floor():
 		velocity.y -= gravity * delta
 
-	if Input.is_action_just_pressed("jump") and is_on_floor():
+	if Input.is_action_just_pressed("jump") and is_on_floor() and not _paused:
 		velocity.y = _jump_velocity
 
 	# Input.get_vector reads four actions and returns a direction of length at
 	# most 1. Because it normalises, holding W and D together does NOT make you
 	# move faster diagonally, which is a classic bug in hand-rolled movement.
-	var input_dir := Input.get_vector("move_left", "move_right", "move_forward", "move_back")
+	# While paused the keys are ignored, so you come to a stop where you are.
+	var input_dir := Vector2.ZERO
+	if not _paused:
+		input_dir = Input.get_vector("move_left", "move_right", "move_forward", "move_back")
 
 	# That direction is in "screen" terms - x is right, y is forward. Turn it
 	# into a world direction by combining the body's own axes. basis.x is the
@@ -450,6 +607,7 @@ func _move(delta: float) -> void:
 
 
 func _shoot(_delta: float) -> void:
+	# Invisibility hides you, and the price is that you cannot shoot.
 	if power_invisible:
 		return
 	# Re-capture the mouse if the player clicked back into the window after
@@ -478,8 +636,12 @@ func _shoot(_delta: float) -> void:
 	glob.splash_radius = _splash_radius
 	glob.splash_mult = _splash_mult
 	glob.projectile_kind = _projectile_kind
+	# A rocket's blast can hurt the one who fired it, up close.
 	glob.allow_self_damage = _projectile_kind == "rocket"
-	glob.color = Powers.color_for(current_power) if not current_power.is_empty() else pair["color"]
+	glob.color = _shot_color()
+	# Who to tell when this glob lands a hit (the crosshair hit marker).
+	# Nothing in the damage path reads this.
+	glob.source_player = self
 	if not tdm_team.is_empty():
 		glob.configure_tdm(self, tdm_team)
 
@@ -517,7 +679,17 @@ func _shoot(_delta: float) -> void:
 		})
 
 	_kick_view_model()
+	if _muzzle_puff != null:
+		_muzzle_puff.restart()
 	stats_changed.emit()
+
+
+## Your paint colour: the power's colour while you carry one, otherwise the
+## inherited pair's.
+func _shot_color() -> Color:
+	if not current_power.is_empty():
+		return Powers.color_for(current_power)
+	return pair.get("color", Color.WHITE)
 
 
 ## Finds the point in the world the crosshair is currently over, by casting a
@@ -601,6 +773,26 @@ func _animate_view_model(delta: float) -> void:
 
 	var target := _view_model_home + sway_offset + bob_offset
 	_view_model.position = _view_model.position.lerp(target, clampf(delta * 14.0, 0.0, 1.0))
+	_animate_gun_parts(delta)
+
+
+## The Paint Blaster's tank is a second paint gauge: the paint inside drains
+## toward the back of the tank as `ammo` falls, and the pressure needle follows.
+## The brass regulator spins while the reservoir refills. All of this only READS
+## ammo and the refill timer; nothing here changes how the gun behaves.
+func _animate_gun_parts(delta: float) -> void:
+	if _gun_fill == null:
+		return
+	var fraction: float = clampf(ammo / maxf(_max_ammo, 1.0), 0.0, 1.0)
+	var smoothing := clampf(delta * 12.0, 0.0, 1.0)
+	# The Fill part's origin is the back of the tank and it extends forward
+	# along -Z, so scaling Z shortens the paint toward the back. Never exactly
+	# zero - a zero scale makes the node's transform degenerate.
+	_gun_fill.scale.z = lerpf(_gun_fill.scale.z, maxf(fraction, 0.02), smoothing)
+	if _gun_needle != null:
+		_gun_needle.rotation.x = lerp_angle(_gun_needle.rotation.x, lerpf(1.1, -1.1, fraction), smoothing)
+	if _gun_regulator != null and _since_fired >= ammo_regen_delay and ammo < _max_ammo:
+		_gun_regulator.rotate_z(delta * 7.0)
 
 
 ## A short recoil shove, run on every shot. Animating the gun rather than the
@@ -608,6 +800,12 @@ func _animate_view_model(delta: float) -> void:
 func _kick_view_model() -> void:
 	_view_model.position.z += 0.05
 	_view_model.position.y -= 0.012
+	# The bristles squash a little on each shot. Scaling the Muzzle node does
+	# not move its origin, so the glob spawn point is unaffected.
+	if _muzzle != null and _gun_fill != null:
+		_muzzle.scale = Vector3(1.12, 1.12, 0.8)
+		var tween := create_tween()
+		tween.tween_property(_muzzle, "scale", Vector3.ONE, 0.12)
 
 
 # ============================================================================
@@ -657,18 +855,34 @@ func _apply_pair(id: String) -> void:
 	_regen_delay = float(pair["regen_delay"])
 	_max_ammo = base_max_ammo * float(pair["ammo_mult"])
 	_ammo_regen = base_ammo_regen * float(pair["ammo_regen_mult"])
+	_projectile_speed = projectile_speed
 
 	# Never leave the reservoir holding more than it can now carry - inheriting
 	# Faded Pigment must actually cut you down to the smaller tank.
 	ammo = minf(ammo, _max_ammo)
 
-	# Repaint the brush head to the new pair's colour.
+	_paint_muzzle()
+
+
+## Repaints the brush head (and the paint in the tank) to your paint colour:
+## the power's while you carry one, otherwise the pair's.
+func _paint_muzzle() -> void:
+	var paint := _shot_color()
 	if _muzzle != null:
 		var mat = _muzzle.material_override
-		mat.albedo_color = pair["color"]
-		mat.emission = pair["color"]
+		if mat is StandardMaterial3D:
+			mat.albedo_color = paint
+			mat.emission = paint
+	if _muzzle_puff != null:
+		_muzzle_puff.color = paint
 
 
+# ============================================================================
+# POWERS (online)
+# ============================================================================
+
+## Called by the match controller when the server gives you a power, takes it
+## away, or turns your invisibility on or off.
 func set_network_power(power_id: String, invisible: bool) -> void:
 	current_power = power_id if Powers.is_valid(power_id) else ""
 	power_invisible = invisible and current_power == "invisibility"
@@ -677,6 +891,7 @@ func set_network_power(power_id: String, invisible: bool) -> void:
 	stats_changed.emit()
 
 
+## Rebuilds your gun and movement for the current power.
 func _apply_power() -> void:
 	# Begin from the ordinary online weapon and movement tuning every time so a
 	# swapped or traded power cannot leave stale modifiers behind.
@@ -702,13 +917,13 @@ func _apply_power() -> void:
 		var halo_color := Powers.color_for(current_power)
 		halo_material.albedo_color = halo_color
 		halo_material.emission = halo_color
+	# The gun in your hands shows the power (scripts/weapons.gd). Rebuilt only
+	# when the model actually changes.
+	if _view_model != null and str(Weapons.for_power(current_power).model) != _gun_model_name:
+		_build_gun()
 	if is_instance_valid(_view_model):
 		_view_model.visible = not power_invisible and not _spectating
-	if is_instance_valid(_muzzle):
-		var muzzle_material := _muzzle.material_override as StandardMaterial3D
-		var muzzle_color: Color = Powers.color_for(current_power) if not current_power.is_empty() else pair.get("color", Color.WHITE)
-		muzzle_material.albedo_color = muzzle_color
-		muzzle_material.emission = muzzle_color
+	_paint_muzzle()
 
 
 func has_current_power() -> bool:
@@ -731,6 +946,25 @@ func try_consume_power_for_station() -> bool:
 
 
 # ============================================================================
+# PAUSE
+# ============================================================================
+
+## Called by the pause menu (scripts/ui/pause_menu.gd). Frees the mouse and
+## ignores your inputs while paused; recaptures the mouse on resume.
+func set_paused(on: bool) -> void:
+	_paused = on
+	if on:
+		Input.action_release("fire")
+		_set_mouse_captured(false)
+	elif not _dead:
+		_set_mouse_captured(true)
+
+
+func is_paused() -> bool:
+	return _paused
+
+
+# ============================================================================
 # DAMAGE
 # ============================================================================
 
@@ -740,6 +974,9 @@ func try_consume_power_for_station() -> bool:
 func take_damage(amount: float, attacker = null) -> void:
 	if _dead:
 		return
+	# Online, the server owns health: other players' hits arrive through
+	# apply_network_vitals(). The only damage this client reports itself is a
+	# rocket's blast hitting the one who fired it.
 	if NetworkSession.is_in_match():
 		if attacker == self:
 			NetworkSession.report_self_damage(amount)
@@ -747,6 +984,7 @@ func take_damage(amount: float, attacker = null) -> void:
 	if not tdm_team.is_empty() and is_instance_valid(tdm_manager):
 		tdm_manager.record_damage(attacker, self)
 
+	# Shield soaks damage first; what is left comes off health.
 	var applied := amount * _taken_mult
 	var absorbed := minf(shield, applied)
 	shield -= absorbed
@@ -763,6 +1001,12 @@ func take_damage(amount: float, attacker = null) -> void:
 		died.emit()
 
 
+## Called by one of this player's globs when it damages something. Only
+## announces it (for the HUD); see hit_confirmed above.
+func confirm_hit() -> void:
+	hit_confirmed.emit()
+
+
 func tdm_respawn(at: Vector3) -> void:
 	stop_spectating()
 	_dead = false
@@ -771,38 +1015,44 @@ func tdm_respawn(at: Vector3) -> void:
 	global_position = at
 	velocity = Vector3.ZERO
 	stats_changed.emit()
-	_set_mouse_captured(true)
+	# Stay un-captured if the pause menu is open; resuming captures it.
+	if not _paused:
+		_set_mouse_captured(true)
 
 
-func start_spectating(target: Node3D) -> void:
-	if not is_instance_valid(target):
-		return
+## Dead and watching someone: the match controller's spectator camera draws
+## the view (scripts/spectator_camera.gd). This parks the body - no collision,
+## no gun on screen, mouse free for the death screen's buttons.
+func start_spectating() -> void:
 	_spectating = true
-	_spectate_target = target
 	velocity = Vector3.ZERO
 	collision_layer = 0
 	collision_mask = 0
-	_view_model.visible = false
-	_camera.top_level = true
-	_camera.current = true
+	if is_instance_valid(_view_model):
+		_view_model.visible = false
 	_set_mouse_captured(false)
 
 
 func stop_spectating() -> void:
 	_spectating = false
-	_spectate_target = null
-	_camera.top_level = false
-	_camera.position = _camera_home
-	_camera.rotation = Vector3.ZERO
-	_view_model.visible = not power_invisible
 	collision_layer = 2
 	collision_mask = 1 | 4
+	if is_instance_valid(_view_model):
+		_view_model.visible = not power_invisible
+	if is_instance_valid(_camera):
+		_camera.position = _camera_home
+		_camera.current = true
+
+
+func is_spectating() -> bool:
+	return _spectating
 
 
 func apply_network_health(next_health: float) -> void:
 	apply_network_vitals(next_health, shield)
 
 
+## Health and shield from the server.
 func apply_network_vitals(next_health: float, next_shield: float) -> void:
 	var was_higher := next_health < health or next_shield < shield
 	health = clampf(next_health, 0.0, max_health)
@@ -827,6 +1077,7 @@ func heal(amount: float) -> void:
 	stats_changed.emit()
 
 
+## A trade station's reward: full health and shield.
 func restore_full_vitals() -> void:
 	health = max_health
 	shield = max_shield

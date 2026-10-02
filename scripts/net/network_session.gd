@@ -1157,7 +1157,7 @@ func _clean_customization(value: Variant) -> Dictionary:
 		"hat": clampi(int(source.get("hat", 0)), 0, 9),
 		"mask": clampi(int(source.get("mask", 0)), 0, 9),
 		"gun_skin": clampi(int(source.get("gun_skin", 0)), 0, 9),
-		"back_bling": clampi(int(source.get("back_bling", 0)), 0, 9),
+		"back_bling": clampi(int(source.get("back_bling", 0)), 0, 11),
 	}
 
 

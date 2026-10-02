@@ -1,5 +1,12 @@
 # The Web export config and GitHub Pages deploy are already set up
 
+Update 2026-10-01: teammate Rocklyn's commit 5e10ed5 on main changed the
+workflow to publish TWO builds in one Pages site: `main` at `/project-2/` and
+the `online` branch at `/project-2/online/`. It always checks out `main` and
+`online` by name, so "Run workflow" from any other branch no longer builds
+that branch - test feature branches locally with F5 instead. The workflow
+fails if the `online` branch is ever deleted.
+
 Two files do this, both already in the repo:
 
 - `export_presets.cfg` — tells Godot how to package the project as a browser

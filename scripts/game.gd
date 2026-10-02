@@ -437,7 +437,9 @@ func _on_wave_cleared() -> void:
 # ============================================================================
 
 func _process(_delta: float) -> void:
-	if game_mode != "SURVIVAL":
+	# The wave/core logic below belongs to offline Survival, which has its own
+	# HUD. An online match never builds that HUD (_hud stays null), so skip it.
+	if game_mode != "SURVIVAL" or _hud == null:
 		return
 	if _run_over:
 		# Allow a restart from the end screen.
