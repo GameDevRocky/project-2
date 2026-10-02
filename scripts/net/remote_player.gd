@@ -1,5 +1,7 @@
 extends CharacterBody3D
 
+const Powers = preload("res://scripts/power_abilities.gd")
+
 ## A visible, collidable copy of another human player. The owning client sends
 ## transforms through NetworkSession; this node smooths toward those updates.
 
@@ -7,6 +9,9 @@ var peer_id := 0
 var display_name := "Player"
 var tdm_team := "FFA"
 var health := 100.0
+var shield := 100.0
+var current_power := ""
+var power_invisible := false
 var alive := true
 var target_position := Vector3.ZERO
 var target_yaw := 0.0
@@ -15,12 +20,17 @@ var target_velocity := Vector3.ZERO
 var _initialized_transform := false
 var _aim_pivot: Node3D
 var _customization: Dictionary = {}
+var _power_halo: MeshInstance3D
 
 
 func setup(record: Dictionary, spawn_position: Vector3, combat_team: String) -> void:
 	peer_id = int(record.get("peer_id", 0))
 	display_name = str(record.get("name", "Player"))
 	tdm_team = combat_team
+	health = float(record.get("health", 100.0))
+	shield = float(record.get("shield", 100.0))
+	current_power = str(record.get("power", ""))
+	power_invisible = bool(record.get("invisible", false))
 	var customization_value = record.get("customization", {})
 	if customization_value is Dictionary:
 		_customization = customization_value.duplicate(true)
@@ -68,6 +78,8 @@ func _ready() -> void:
 	add_child(head)
 
 	_build_weapon(_customization)
+	_build_power_halo()
+	_refresh_power_visuals()
 
 
 func _build_weapon(customization: Dictionary) -> void:
@@ -117,6 +129,39 @@ func _make_weapon_box(box_size: Vector3, at: Vector3, color: Color) -> MeshInsta
 	return node
 
 
+func _build_power_halo() -> void:
+	_power_halo = MeshInstance3D.new()
+	_power_halo.name = "PowerHalo"
+	var torus := TorusMesh.new()
+	torus.inner_radius = 0.34
+	torus.outer_radius = 0.43
+	_power_halo.mesh = torus
+	_power_halo.position = Vector3(0.0, 2.28, 0.0)
+	var material := StandardMaterial3D.new()
+	material.emission_enabled = true
+	material.emission_energy_multiplier = 2.5
+	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	_power_halo.material_override = material
+	add_child(_power_halo)
+
+
+func set_power_state(power_id: String, invisible: bool) -> void:
+	current_power = power_id if Powers.is_valid(power_id) else ""
+	power_invisible = invisible and current_power == "invisibility"
+	_refresh_power_visuals()
+
+
+func _refresh_power_visuals() -> void:
+	visible = alive and not power_invisible
+	if not is_instance_valid(_power_halo):
+		return
+	_power_halo.visible = alive and not current_power.is_empty() and not power_invisible
+	var color := Powers.color_for(current_power)
+	var material := _power_halo.material_override as StandardMaterial3D
+	material.albedo_color = color
+	material.emission = color
+
+
 func receive_network_transform(next_position: Vector3, yaw: float, pitch: float, next_velocity: Vector3) -> void:
 	target_position = next_position
 	target_yaw = yaw
@@ -146,7 +191,12 @@ func take_damage(amount: float, _attacker = null) -> void:
 
 
 func set_network_health(next_health: float) -> void:
+	set_network_vitals(next_health, shield)
+
+
+func set_network_vitals(next_health: float, next_shield: float) -> void:
 	health = next_health
+	shield = next_shield
 	if health <= 0.0:
 		eliminate()
 
@@ -160,13 +210,15 @@ func eliminate() -> void:
 
 func respawn(at: Vector3) -> void:
 	health = 100.0
+	shield = 100.0
 	alive = true
-	visible = true
+	visible = not power_invisible
 	collision_layer = 4
 	collision_mask = 1 | 2 | 4
 	global_position = at
 	target_position = at
 	velocity = Vector3.ZERO
+	_refresh_power_visuals()
 
 
 func _team_color() -> Color:

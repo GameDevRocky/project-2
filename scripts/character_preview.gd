@@ -1,9 +1,18 @@
 extends Node3D
 class_name CharacterPreview
 
+## The character shown in the menu: the same dressed Canvas Runner that TDM
+## bots wear (scripts/visual/runner_dresser.gd), so what you pick here is what
+## a runner looks like in a match. If the runner model is missing, the original
+## bean preview below is built instead.
+
 const Data = preload("res://scripts/character_customization_data.gd")
+const PaintKit = preload("res://scripts/visual/paint_kit.gd")
+const RunnerDresser = preload("res://scripts/visual/runner_dresser.gd")
 const DEFAULT_COLORS := ["#242735", "#65F581", "#3A9EFF", "#FF4EAC", "#F7F7F4", "#D93555", "#E5B842", "#637B48", "#9A67E8", "#FFFFFF"]
 
+## Colour of the team marks while there is no team yet (the menu's mint).
+var team_color := Color("#8CEADF")
 var customization: Dictionary = Data.create_session_data()
 var _material_nodes: Array[MeshInstance3D] = []
 
@@ -21,6 +30,19 @@ func _rebuild() -> void:
 	for child in get_children():
 		child.queue_free()
 	_material_nodes.clear()
+	var runner := RunnerDresser.build(customization, team_color, false)
+	if runner != null:
+		add_child(runner)
+		# Feet on the showcase seat (the old bean stood 0.14 m up its capsule),
+		# and turned to face the camera like the bean did (the runner faces +Z).
+		runner.position = Vector3(0.0, 0.13, 0.0)
+		runner.rotation.y = PI
+		return
+	_rebuild_bean()
+
+
+## The original procedural bean, kept as the fallback.
+func _rebuild_bean() -> void:
 	var skin_id := str(customization.get("skin", "default"))
 	var skin := Data.skin_by_id(skin_id)
 	if not str(skin.scene_path).is_empty() and ResourceLoader.exists(skin.scene_path):
@@ -231,6 +253,24 @@ func _apply_accessories() -> void:
 
 func _add_paint_gun() -> void:
 	var gun_color := Color(Data.ACCENT_COLORS[int(customization.get("gun_skin", 0)) % Data.ACCENT_COLORS.size()])
+	# The same Paint Blaster the player holds in a match, held where the old
+	# box gun was and pointing the same way (+X). The gun-skin colour goes on
+	# its skin band; the brush and tank use the old muzzle's mint.
+	var blaster := PaintKit.instance("paint_blaster")
+	if blaster != null:
+		add_child(blaster)
+		blaster.position = Vector3(0.53, 0.76, -0.56)
+		# The model points down its -Z; turning it -90 degrees about Y points
+		# it down +X, like the old box.
+		blaster.rotation.y = -PI * 0.5
+		blaster.scale = Vector3.ONE * 1.35
+		PaintKit.paint(blaster, Color("#79F5E6"), Color.WHITE, false,
+			{"PK_Skin": PaintKit.role_material("PK_Team", gun_color, false)})
+		var material_path := Data.gun_material_path(int(customization.get("gun_skin", 0)))
+		var band := PaintKit.part(blaster, "SkinBand") as GeometryInstance3D
+		if band != null and not material_path.is_empty() and ResourceLoader.exists(material_path):
+			band.material_override = load(material_path) as Material
+		return
 	var gun := _box(Vector3(0.2, 0.2, 0.9), Vector3(0.53, 0.76, -0.56), gun_color)
 	var material_path := Data.gun_material_path(int(customization.get("gun_skin", 0)))
 	if not material_path.is_empty() and ResourceLoader.exists(material_path):

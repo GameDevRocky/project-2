@@ -7,7 +7,18 @@ on cores. It is only created when the flag is passed, so it costs a real play
 session nothing.
 
     GODOT="C:/Users/jlion/Downloads/Godot_v4.7.2-stable_win64.exe/Godot_v4.7.2-stable_win64_console.exe"
-    "$GODOT" --headless --path "C:/Users/jlion/Downloads/project-2" --quit-after 18000 -- --autoplay
+    "$GODOT" --headless --path "<project>" res://scenes/match.tscn --quit-after 18000 -- --autoplay
+
+Update 2026-09-29: since jcodes's PR #3 the main scene is the MENU
+(`scenes/main.tscn` -> `menu.gd`), so the old command without
+`res://scenes/match.tscn` just idles on the menu and tests nothing. Naming the
+match scene starts Survival directly (game.gd defaults to `game_mode =
+"SURVIVAL"`). MECHANICS.md's Testing section still shows the old command.
+TDM cannot be started this way - game.gd needs lobby records - and game.gd
+never attaches the autoplay bot in TDM. To test TDM, use a throwaway
+`extends SceneTree` script that instantiates match.tscn, sets `game_mode =
+"TEAM_DEATH_MATCH"`, `session_team` and 20 `lobby_players` records, then adds
+`tools/autoplay.gd` itself.
 
 The bare `--` matters: everything after it goes to the game, not the engine.
 `--autoplay` also turns on `[game]` logging (wave start/clear, each kill, each

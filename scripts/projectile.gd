@@ -55,6 +55,13 @@ var life: float = 4.0
 var attacker = null
 var attacker_team := ""
 var can_deal_damage := true
+var projectile_kind := "bullet"
+var allow_self_damage := false
+## The player who fired this glob, if any. Used ONLY to tell them "you hit
+## something" for the crosshair hit marker; the damage code never reads it.
+var source_player = null
+## Set when this glob damaged anything, directly or by splash.
+var _hit_landed := false
 
 
 # --- Physics layer numbers, named so the code reads clearly -----------------
@@ -78,6 +85,13 @@ var _previous_position: Vector3
 # two impacts in the same frame and deal double damage.
 var _spent: bool = false
 
+# The trail, its full length, and how far this shot has flown. The trail grows
+# from nothing to its full length over its first metres, so it never pokes out
+# behind the gun - through it and past the camera - right after firing.
+var _trail: MeshInstance3D
+var _trail_length: float = 1.15
+var _travelled: float = 0.0
+
 
 ## Called by the player or an enemy right after spawning the glob, to hand it
 ## everything it needs to know. Doing setup through one function like this -
@@ -94,7 +108,11 @@ func setup(from: Vector3, dir: Vector3, fired_by_player: bool) -> void:
 	direction = dir.normalized()
 	# A Node3D faces along its local -Z axis. Pointing the projectile node along
 	# its travel direction also points the child tracer directly behind it.
-	look_at(from + direction, Vector3.UP)
+	# (A shot fired straight up or down would make "up" and the direction the
+	# same line, which look_at cannot use, so then RIGHT stands in for up.)
+	if direction.length() > 0.001:
+		var up := Vector3.UP if absf(direction.y) < 0.98 else Vector3.RIGHT
+		look_at(from + direction, up)
 
 	if fired_by_player:
 		# The player's paint hits walls and enemies, and passes over the player.
@@ -123,8 +141,9 @@ func _ready() -> void:
 	var mesh_node := MeshInstance3D.new()
 	mesh_node.name = "Bullet"
 	var sphere := SphereMesh.new()
-	sphere.radius = BULLET_RADIUS
-	sphere.height = BULLET_RADIUS * 2.0
+	var visual_radius := 0.18 if projectile_kind == "rocket" else BULLET_RADIUS
+	sphere.radius = visual_radius
+	sphere.height = visual_radius * 2.0
 	# radial_segments/rings control how many triangles the ball is made of.
 	# Low numbers keep it faceted, which suits the GDD's "low-poly" direction
 	# and costs almost nothing to draw even with dozens on screen.
@@ -132,22 +151,8 @@ func _ready() -> void:
 	sphere.rings = 4
 	mesh_node.mesh = sphere
 
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = color
-	# An emission makes the material give off its own light-like glow, so the
-	# glob stays readable even in shadow. It does not actually light the world.
-	#
-	# The glob used to be UNSHADED as well. Unshaded draws the plain albedo
-	# colour and nothing else - Godot skips emission entirely in that mode - so
-	# the glow set here was never actually drawn. Leaving the glob lit lets the
-	# emission through: strong enough to push it past the arena's glow
-	# threshold, so incoming paint carries a halo you can track and dodge.
-	mat.emission_enabled = true
-	mat.emission = color
-	mat.emission_energy_multiplier = 1.8
-	# Ignore the arena's distance haze, so a glob fired from across the room is
-	# as crisp as one fired from next to you.
-	mat.disable_fog = true
+	# The material is built by glob_material() below (see the note there).
+	var mat := glob_material(color, projectile_kind == "rocket")
 	mesh_node.material_override = mat
 
 	add_child(mesh_node)
@@ -161,26 +166,31 @@ func _build_trail() -> void:
 	var trail := MeshInstance3D.new()
 	trail.name = "Trail"
 	var trail_mesh := CylinderMesh.new()
-	trail_mesh.top_radius = TRAIL_RADIUS
+	trail_mesh.top_radius = 0.065 if projectile_kind == "rocket" else TRAIL_RADIUS
 	trail_mesh.bottom_radius = 0.0
-	trail_mesh.height = TRAIL_LENGTH
+	trail_mesh.height = 2.2 if projectile_kind == "rocket" else TRAIL_LENGTH
 	trail_mesh.radial_segments = 6
 	trail_mesh.rings = 1
 	trail.mesh = trail_mesh
 	trail.rotation.x = deg_to_rad(90.0)
-	trail.position.z = TRAIL_LENGTH * 0.5
 	trail.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-
-	var trail_material := StandardMaterial3D.new()
-	trail_material.albedo_color = Color(color.r, color.g, color.b, 0.72)
-	trail_material.emission_enabled = true
-	trail_material.emission = color
-	trail_material.emission_energy_multiplier = 2.2
-	trail_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	trail_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	trail_material.disable_fog = true
-	trail.material_override = trail_material
+	trail.material_override = trail_material_for(color)
 	add_child(trail)
+	_trail = trail
+	_trail_length = float(trail_mesh.height)
+	_grow_trail()
+
+
+## Stretches the trail to the distance flown so far, up to its full length.
+## Scaling the trail node's own Y stretches the cylinder along its length
+## (its Y, laid along +Z by the 90 degree turn), and moving it back by half
+## that keeps its thin end touching the bullet.
+func _grow_trail() -> void:
+	if _trail == null:
+		return
+	var fraction := clampf(_travelled / maxf(_trail_length, 0.01), 0.01, 1.0)
+	_trail.scale = Vector3(1.0, fraction, 1.0)
+	_trail.position.z = _trail_length * fraction * 0.5
 
 
 ## _physics_process runs on the engine's fixed physics clock (60 times a second
@@ -225,17 +235,20 @@ func _physics_process(delta: float) -> void:
 			continue
 		break
 	if hit:
-		_impact(hit["position"], hit["collider"])
+		_impact(hit["position"], hit["collider"], hit["normal"])
 		return
 
 	_previous_position = global_position
 	global_position = next_position
+	_travelled += speed * delta
+	_grow_trail()
 
 
 ## Runs once, at the moment the glob touches something.
 ## `what` is the node the ray crossed - a wall, an enemy, or the player.
-func _impact(at: Vector3, what) -> void:
+func _impact(at: Vector3, what, surface_normal: Vector3 = Vector3.UP) -> void:
 	_spent = true
+	_spawn_impact_debris(at, surface_normal)
 
 	# Direct damage. is_in_group() checks the node was tagged with add_to_group,
 	# which is how we tell "an enemy" apart from "a wall" without caring what
@@ -245,8 +258,10 @@ func _impact(at: Vector3, what) -> void:
 	var friendly_hit := false
 	if not attacker_team.is_empty() and what != null and what.is_in_group("tdm_combatants"):
 		friendly_hit = str(what.get("tdm_team")) == attacker_team
-	if can_deal_damage and what != null and not friendly_hit and what.is_in_group(target_group) and what.has_method("take_damage"):
+	var is_snitch: bool = what != null and bool(what.is_in_group("snitch_balls"))
+	if can_deal_damage and what != null and not friendly_hit and (what.is_in_group(target_group) or is_snitch) and what.has_method("take_damage"):
 		what.take_damage(damage, attacker)
+		_hit_landed = true
 
 	# Splash damage, if the shooter's inherited pair grants it. This is a plain
 	# distance check against everything in the target group rather than a
@@ -254,8 +269,55 @@ func _impact(at: Vector3, what) -> void:
 	# just as fast, and it is far easier to read and to debug.
 	if can_deal_damage and splash_radius > 0.0:
 		_splash(at, what)
+	if projectile_kind == "rocket":
+		_spawn_rocket_sparks(at)
+
+	if _hit_landed and source_player != null and is_instance_valid(source_player):
+		source_player.confirm_hit()
 
 	queue_free()
+
+
+## Bursts a handful of short-lived fragments from the exact raycast contact
+## point. These are visual MeshInstance3D nodes rather than physics bodies, so
+## a rapid firefight cannot fill the physics simulation with tiny objects.
+func _spawn_impact_debris(at: Vector3, surface_normal: Vector3) -> void:
+	var debris := Node3D.new()
+	debris.name = "ImpactDebris"
+	get_parent().add_child(debris)
+	debris.global_position = at + surface_normal * 0.035
+
+	var material := debris_material(color)
+
+	var shard_count := 14 if projectile_kind == "rocket" else 6
+	for index in shard_count:
+		var shard := MeshInstance3D.new()
+		shard.name = "Shard%d" % index
+		var shard_mesh := BoxMesh.new()
+		shard_mesh.size = Vector3.ONE * randf_range(0.045, 0.085)
+		shard.mesh = shard_mesh
+		shard.material_override = material
+		shard.rotation = Vector3(
+			randf_range(0.0, TAU), randf_range(0.0, TAU), randf_range(0.0, TAU))
+		debris.add_child(shard)
+
+		var random_spread := Vector3(
+			randf_range(-1.0, 1.0), randf_range(0.05, 0.8), randf_range(-1.0, 1.0))
+		var burst_direction := (surface_normal * randf_range(0.7, 1.25)
+			+ random_spread * 0.55 + Vector3.UP * 0.25).normalized()
+		var end_position := burst_direction * randf_range(0.28, 0.7)
+
+		var tween := shard.create_tween()
+		tween.set_parallel(true)
+		tween.tween_property(shard, "position", end_position, 0.32).set_trans(
+			Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+		tween.tween_property(shard, "rotation", shard.rotation + Vector3(
+			randf_range(-2.0, 2.0), randf_range(-2.0, 2.0), randf_range(-2.0, 2.0)), 0.32)
+		tween.tween_property(shard, "scale", Vector3.ZERO, 0.16).set_delay(0.18)
+
+	var cleanup := debris.create_tween()
+	cleanup.tween_interval(0.38)
+	cleanup.tween_callback(debris.queue_free)
 
 
 func _splash(at: Vector3, already_hit) -> void:
@@ -271,7 +333,8 @@ func _splash(at: Vector3, already_hit) -> void:
 			continue
 		if not node.has_method("take_damage"):
 			continue
-		if not attacker_team.is_empty() and str(node.get("tdm_team")) == attacker_team:
+		if (not attacker_team.is_empty() and str(node.get("tdm_team")) == attacker_team
+				and not (allow_self_damage and node == attacker)):
 			continue
 
 		# Deliberately untyped: see the note in _impact about static method checks.
@@ -286,8 +349,42 @@ func _splash(at: Vector3, already_hit) -> void:
 		# better than every other pair instead of a trade-off.
 		var falloff: float = 1.0 - (distance / splash_radius)
 		target.take_damage(splash_damage * falloff, attacker)
+		_hit_landed = true
 
 	_spawn_burst(at)
+
+
+func _spawn_rocket_sparks(at: Vector3) -> void:
+	var sparks := Node3D.new()
+	sparks.name = "RocketSparks"
+	get_parent().add_child(sparks)
+	sparks.global_position = at
+	var spark_material := spark_material_for()
+	for index in 28:
+		var spark := MeshInstance3D.new()
+		var spark_mesh := BoxMesh.new()
+		spark_mesh.size = Vector3(0.055, 0.055, randf_range(0.55, 1.35))
+		spark.mesh = spark_mesh
+		spark.material_override = spark_material
+		var burst_direction := Vector3(
+			randf_range(-1.0, 1.0), randf_range(-0.35, 1.0), randf_range(-1.0, 1.0)).normalized()
+		sparks.add_child(spark)
+		spark.look_at(spark.global_position + burst_direction,
+			Vector3.UP if absf(burst_direction.y) < 0.98 else Vector3.RIGHT)
+		var tween := spark.create_tween()
+		tween.set_parallel(true)
+		tween.tween_property(spark, "position", burst_direction * randf_range(3.5, 8.5), 0.42).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+		tween.tween_property(spark, "scale", Vector3.ZERO, 0.18).set_delay(0.24)
+	var light := OmniLight3D.new()
+	light.light_color = Color("#FF9A42")
+	light.light_energy = 9.0
+	light.omni_range = 12.0
+	sparks.add_child(light)
+	var light_tween := light.create_tween()
+	light_tween.tween_property(light, "light_energy", 0.0, 0.32)
+	var cleanup := sparks.create_tween()
+	cleanup.tween_interval(0.5)
+	cleanup.tween_callback(sparks.queue_free)
 
 
 ## A quick expanding ring drawn when a Splatter Round bursts, so the player can
@@ -301,14 +398,7 @@ func _spawn_burst(at: Vector3) -> void:
 	ball.rings = 6
 	ring.mesh = ball
 
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(color.r, color.g, color.b, 0.45)
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	# Drawing only the inside faces of the sphere makes it read as a soft cloud
-	# you are looking into, rather than a hard opaque ball blocking your view.
-	mat.cull_mode = BaseMaterial3D.CULL_FRONT
-	mat.disable_fog = true
+	var mat := burst_material(color)
 	ring.material_override = mat
 
 	get_parent().add_child(ring)
@@ -322,3 +412,72 @@ func _spawn_burst(at: Vector3) -> void:
 	tween.tween_property(ring, "scale", Vector3.ONE * splash_radius, 0.18)
 	tween.tween_property(mat, "albedo_color:a", 0.0, 0.35)
 	tween.chain().tween_callback(ring.queue_free)
+
+
+# --- Effect materials --------------------------------------------------------
+# Built by static functions so scripts/visual/shader_warmup.gd can draw these
+# exact materials once while the match loads. The web renderer compiles each
+# kind of material the first time it is drawn, which froze the game for
+# ~140 ms at the first hit of a match; warming them up moves that to loading.
+
+## The bullet in flight. An emission makes the material give off its own
+## light-like glow, so the bullet stays readable even in shadow. It is lit
+## rather than UNSHADED on purpose: unshaded skips emission entirely, and the
+## glow is what pushes it past the arena's glow threshold, so incoming paint
+## carries a halo you can track and dodge. Fog is off so a shot fired from
+## across the room is as crisp as one fired next to you. Rockets glow harder.
+static func glob_material(c: Color, rocket := false) -> StandardMaterial3D:
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = c
+	mat.emission_enabled = true
+	mat.emission = c
+	mat.emission_energy_multiplier = 3.0 if rocket else 1.8
+	mat.disable_fog = true
+	return mat
+
+
+## The thin streak behind a bullet.
+static func trail_material_for(c: Color) -> StandardMaterial3D:
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(c.r, c.g, c.b, 0.72)
+	mat.emission_enabled = true
+	mat.emission = c
+	mat.emission_energy_multiplier = 2.2
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.disable_fog = true
+	return mat
+
+
+## The little shards thrown off where a shot lands.
+static func debris_material(c: Color) -> StandardMaterial3D:
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = c.lightened(0.18)
+	mat.emission_enabled = true
+	mat.emission = c
+	mat.emission_energy_multiplier = 1.1
+	mat.disable_fog = true
+	return mat
+
+
+## A rocket's sparks.
+static func spark_material_for() -> StandardMaterial3D:
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color("#FFF2A6")
+	mat.emission_enabled = true
+	mat.emission = Color("#FF8A30")
+	mat.emission_energy_multiplier = 5.0
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	return mat
+
+
+## The splash sphere. Only its inside faces are drawn, so it reads as a soft
+## cloud you are looking into rather than a hard opaque ball blocking the view.
+static func burst_material(c: Color) -> StandardMaterial3D:
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(c.r, c.g, c.b, 0.45)
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.cull_mode = BaseMaterial3D.CULL_FRONT
+	mat.disable_fog = true
+	return mat

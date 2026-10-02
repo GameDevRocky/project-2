@@ -20,6 +20,9 @@ extends CharacterBody3D
 const Traits = preload("res://scripts/traits.gd")
 const Projectile = preload("res://scripts/projectile.gd")
 const CorePickup = preload("res://scripts/core_pickup.gd")
+const UITheme = preload("res://scripts/ui/ui_theme.gd")
+const CombatantVisualScript = preload("res://scripts/visual/combatant_visual.gd")
+const PaintFx = preload("res://scripts/visual/paint_fx.gd")
 
 
 ## Announced when this enemy dies. game.gd counts these to know when the wave is
@@ -208,8 +211,16 @@ var _strafe_timer: float = 0.0
 var _gravity: float = 20.0
 var tdm_team := ""
 var tdm_manager = null
+## TDM bots only: how this bot looks (outfit, suit, hat, mask, back bling, gun
+## skin), copied from its lobby record. Purely cosmetic - read by
+## scripts/visual/combatant_visual.gd, never by anything that plays the game.
+var customization: Dictionary = {}
 
 var _mesh: MeshInstance3D
+## The generated model and its animations (scripts/visual/combatant_visual.gd).
+## Only what you SEE; the capsule above is still what gets hit. Null when the
+## model file is missing, in which case the old sphere (_mesh) is used.
+var _visual = null
 var _health_bar: MeshInstance3D
 var _health_bar_bg: MeshInstance3D
 
@@ -297,6 +308,18 @@ func _build_body() -> void:
 ## the colour of the pair it drops. Colour is the only thing you need to read
 ## across the arena to know what you are fighting and what it will leave behind.
 func _build_mesh() -> void:
+	# The generated model: each archetype's own silhouette, painted in its pair
+	# colour; TDM bots wear the Canvas Runner in their team colour.
+	var visual = CombatantVisualScript.new()
+	var kind := type_id if tdm_team.is_empty() else "runner"
+	var team_color := UITheme.team_color(tdm_team) if not tdm_team.is_empty() else Color.WHITE
+	if visual.setup(self, kind, stats["color"], team_color):
+		_visual = visual
+		add_child(visual)
+		return
+	visual.free()
+
+	# Fallback: the original faceted sphere, if the model file is missing.
 	_mesh = MeshInstance3D.new()
 	var body := SphereMesh.new()
 	body.radius = float(stats["radius"]) * 1.15
@@ -310,7 +333,7 @@ func _build_mesh() -> void:
 	var mat := StandardMaterial3D.new()
 	var body_color: Color = stats["color"]
 	if not tdm_team.is_empty():
-		body_color = Color("#FF627E") if tdm_team == "RED" else Color("#58D7F2")
+		body_color = UITheme.team_color(tdm_team)
 	mat.albedo_color = body_color
 	mat.roughness = 0.85
 	mat.metallic = 0.0
@@ -340,7 +363,7 @@ func _build_health_bar() -> void:
 
 	var health_color := Color(1.0, 0.36, 0.45, 1.0)
 	if not tdm_team.is_empty():
-		health_color = Color("#FF627E") if tdm_team == "RED" else Color("#58D7F2")
+		health_color = UITheme.team_color(tdm_team)
 	_health_bar = _make_bar_quad(health_color, 1.0)
 	# Sit the fill a hair in front of the background so they do not fight over
 	# the same depth and flicker ("z-fighting").
@@ -457,10 +480,12 @@ func _fire_tdm_at(target) -> void:
 	glob.set_script(Projectile)
 	glob.damage = 13.0
 	glob.speed = 28.0
-	glob.color = Color("#FF627E") if tdm_team == "RED" else Color("#58D7F2")
+	glob.color = UITheme.team_color(tdm_team)
 	glob.configure_tdm(self, tdm_team)
 	get_parent().add_child(glob)
 	glob.setup(from, to - from, false)
+	if _visual != null:
+		_visual.on_fire()
 
 
 func _regenerate(delta: float) -> void:
@@ -577,6 +602,8 @@ func _try_attack(player_position: Vector3, distance: float) -> void:
 			_retreat_timer = 1.15
 			_player.take_damage(float(stats["damage"]))
 			_flash()
+			if _visual != null:
+				_visual.on_melee()
 		return
 
 	# Shooters need to be in range AND to actually be able to see you.
@@ -631,6 +658,8 @@ func _fire_at(player_position: Vector3) -> void:
 	glob.setup(from, to - from, false)
 
 	_flash()
+	if _visual != null:
+		_visual.on_fire()
 
 
 ## Called by the player's paint. `amount` has already had the player's own
@@ -663,6 +692,9 @@ func _refresh_health_bar() -> void:
 ## A brief white flash on being hit or firing. Hit feedback is the cheapest
 ## possible way to make a weapon feel like it is connecting.
 func _flash() -> void:
+	if _visual != null:
+		_visual.flash()
+		return
 	if _mesh == null:
 		return
 	var mat = _mesh.material_override
@@ -690,6 +722,12 @@ func _die() -> void:
 
 	died.emit(global_position)
 
+	# A burst of the combatant's own paint as it goes down - archetype colour
+	# for enemies, team colour for TDM bots. Decoration only.
+	var burst_color: Color = stats["color"] if tdm_team.is_empty() else UITheme.team_color(tdm_team)
+	PaintFx.burst(get_parent(), global_position + Vector3(0.0, float(stats["height"]) * 0.5, 0.0),
+		burst_color, 22, 4.5, 1.4)
+
 	# A quick collapse before vanishing, so kills read clearly in a busy fight.
 	# Collisions are switched off first: a corpse mid-animation must not keep
 	# blocking your shots or bumping into you.
@@ -710,8 +748,12 @@ func _die() -> void:
 	# the scale, falls back to a uniform one, and prints an error every frame of
 	# the animation. The mesh is only ever drawn, never simulated, so squashing
 	# that instead gets the same look with nothing for physics to object to.
+	var squashed: Node3D = _mesh
+	if _visual != null:
+		_visual.set_process(false)
+		squashed = _visual
 	var tween := create_tween()
 	tween.set_parallel(true)
-	tween.tween_property(_mesh, "scale", Vector3(1.4, 0.05, 1.4), 0.22)
-	tween.tween_property(_mesh, "position:y", 0.05, 0.22)
+	tween.tween_property(squashed, "scale", Vector3(1.4, 0.05, 1.4), 0.22)
+	tween.tween_property(squashed, "position:y", 0.05, 0.22)
 	tween.chain().tween_callback(queue_free)

@@ -37,7 +37,7 @@ const PlayerScript = preload("res://scripts/player.gd")
 const EnemyScript = preload("res://scripts/enemy.gd")
 const ArenaScript = preload("res://scripts/arena.gd")
 const HudScript = preload("res://scripts/hud.gd")
-const HealingStationScene = preload("res://scenes/healing_station.tscn")
+const HealingStationScript = preload("res://scripts/healing_station.gd")
 const TDMControllerScript = preload("res://scripts/tdm_match_controller.gd")
 
 
@@ -111,8 +111,18 @@ func _ready() -> void:
 	if not NetworkSession.is_in_match():
 		get_tree().change_scene_to_file("res://scenes/main.tscn")
 		return
+	# Read the current round from the persistent network autoload. This also
+	# makes automatic rematches safe when the match scene reloads itself.
+	game_mode = NetworkSession.current_game_mode
+	lobby_players = NetworkSession.lobby_roster()
+	var local_record: Dictionary = NetworkSession.players.get(NetworkSession.local_peer_id(), {})
+	session_team = str(local_record.get("team", "FFA"))
+	var profile_customization = NetworkSession.local_player_info.get("customization", {})
+	if profile_customization is Dictionary:
+		customization = (profile_customization as Dictionary).duplicate(true)
 	_build_arena()
 	_build_player()
+	_build_healing_station()
 	var controller := Node.new()
 	controller.name = "OnlineMatchController"
 	controller.set_script(TDMControllerScript)
@@ -168,6 +178,52 @@ func _ensure_input_actions() -> void:
 		var click := InputEventMouseButton.new()
 		click.button_index = MOUSE_BUTTON_LEFT
 		InputMap.action_add_event("fire", click)
+	if not InputMap.has_action("toggle_power"):
+		InputMap.add_action("toggle_power")
+		var right_click := InputEventMouseButton.new()
+		right_click.button_index = MOUSE_BUTTON_RIGHT
+		InputMap.action_add_event("toggle_power", right_click)
+
+	# Standard Godot gamepad axes follow the Xbox-style layout on every mapped
+	# controller: left stick moves, right stick looks, right trigger fires, and
+	# the south face button (A on Xbox, Cross on PlayStation) jumps.
+	_ensure_joy_axis("move_left", JOY_AXIS_LEFT_X, -1.0)
+	_ensure_joy_axis("move_right", JOY_AXIS_LEFT_X, 1.0)
+	_ensure_joy_axis("move_forward", JOY_AXIS_LEFT_Y, -1.0)
+	_ensure_joy_axis("move_back", JOY_AXIS_LEFT_Y, 1.0)
+	_ensure_joy_axis("look_left", JOY_AXIS_RIGHT_X, -1.0)
+	_ensure_joy_axis("look_right", JOY_AXIS_RIGHT_X, 1.0)
+	_ensure_joy_axis("look_up", JOY_AXIS_RIGHT_Y, -1.0)
+	_ensure_joy_axis("look_down", JOY_AXIS_RIGHT_Y, 1.0)
+	_ensure_joy_axis("fire", JOY_AXIS_TRIGGER_RIGHT, 1.0)
+	_ensure_joy_button("jump", JOY_BUTTON_A)
+	_ensure_joy_button("toggle_power", JOY_BUTTON_LEFT_SHOULDER)
+	_ensure_joy_button("interact", JOY_BUTTON_X)
+
+
+func _ensure_joy_axis(action: StringName, axis: int, axis_value: float) -> void:
+	if not InputMap.has_action(action):
+		InputMap.add_action(action, 0.2)
+	for existing in InputMap.action_get_events(action):
+		if (existing is InputEventJoypadMotion
+				and existing.axis == axis
+				and signf(existing.axis_value) == signf(axis_value)):
+			return
+	var event := InputEventJoypadMotion.new()
+	event.axis = axis
+	event.axis_value = axis_value
+	InputMap.action_add_event(action, event)
+
+
+func _ensure_joy_button(action: StringName, button: int) -> void:
+	if not InputMap.has_action(action):
+		InputMap.add_action(action, 0.2)
+	for existing in InputMap.action_get_events(action):
+		if existing is InputEventJoypadButton and existing.button_index == button:
+			return
+	var event := InputEventJoypadButton.new()
+	event.button_index = button
+	InputMap.action_add_event(action, event)
 
 
 func _build_arena() -> void:
@@ -187,12 +243,11 @@ func _build_player() -> void:
 		_player.tdm_team = session_team
 	add_child(_player)
 	# Start on the centre platform, which is 0.8m tall - so spawn just above it.
-	_player.global_position = Vector3(-34.0 if session_team == "RED" else 34.0, 1.2, 0.0)
+	_player.global_position = Vector3(-55.0 if session_team == "RED" else 55.0, 1.2, 0.0)
 
-	# Listen for the player's death. A signal connection is how this script
-	# finds out without having to check the player's health every frame.
-	if game_mode == "SURVIVAL":
-		_player.died.connect(_on_player_died)
+	# Online deaths are resolved by the server and the match controller. The
+	# local player's died signal must not open the legacy offline wave ending,
+	# because Survival uses that death to enter the spectator chain instead.
 
 
 ## Instantiate the reusable station at each protected but contestable location.
@@ -200,12 +255,13 @@ func _build_healing_station() -> void:
 	var station_positions := [
 		Vector3(-28.0, 0.0, -28.0), # NW small building, ground floor.
 		Vector3(33.0, 0.0, -31.0), # NE building, east room.
-		Vector3(-29.0, 3.4, 23.0), # SW building, raised floor.
-		Vector3(5.0, -2.4, 29.0), # Recessed southern route.
 	]
 	for index in station_positions.size():
-		var station := HealingStationScene.instantiate()
+		var station := Node3D.new()
+		station.set_script(HealingStationScript)
 		station.name = "HealingStation%d" % (index + 1)
+		station.station_id = index
+		station.require_power_to_trade = true
 		add_child(station)
 		station.global_position = station_positions[index]
 
@@ -381,7 +437,9 @@ func _on_wave_cleared() -> void:
 # ============================================================================
 
 func _process(_delta: float) -> void:
-	if game_mode != "SURVIVAL":
+	# The wave/core logic below belongs to offline Survival, which has its own
+	# HUD. An online match never builds that HUD (_hud stays null), so skip it.
+	if game_mode != "SURVIVAL" or _hud == null:
 		return
 	if _run_over:
 		# Allow a restart from the end screen.
