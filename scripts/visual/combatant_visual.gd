@@ -77,6 +77,33 @@ func setup(enemy, visual_kind: String, accent: Color, team: Color) -> bool:
 		add_child(model)
 		PaintKit.paint(model, accent)
 		_add_enemy_accessory()
+	_collect_parts()
+	if kind == "ghost" and _parts.has("Eyes"):
+		# The Ghost's eyes get their own material so one Ghost can glow brighter
+		# while it heals without every other Ghost glowing with it.
+		_eye_material = PaintKit.role_material("PK_AccentGlow", accent).duplicate() as StandardMaterial3D
+		(_parts["Eyes"] as GeometryInstance3D).material_override = _eye_material
+	return true
+
+
+## An online player's look: the runner in THEIR customization, with empty
+## hands - their gun rides on the remote player's AimPivot instead so it
+## follows their aim (see scripts/visual/remote_look.gd).
+func setup_remote(remote, customization: Dictionary, team: Color) -> bool:
+	body = remote
+	kind = "runner"
+	name = "Visual"
+	_time = randf() * 10.0
+	model = RunnerDresser.build(customization, team, true, false)
+	if model == null:
+		return false
+	add_child(model)
+	_collect_parts()
+	return true
+
+
+## Finds the parts this script animates, and remembers their modelled pose.
+func _collect_parts() -> void:
 	for part_name in ["Leg_L", "Leg_R", "NozzleFan", "Spring_L", "Spring_R", "Arm_L", "Arm_R",
 			"Roller_L", "Roller_R", "Fill", "Mortar", "Glob", "TopSlab", "Cannon", "Shield",
 			"Eyes", "Strip_0", "Strip_1", "Strip_2", "Strip_3", "Strip_4"]:
@@ -84,12 +111,6 @@ func setup(enemy, visual_kind: String, accent: Color, team: Color) -> bool:
 		if node != null:
 			_parts[part_name] = node
 			_rest[part_name] = node.transform
-	if kind == "ghost" and _parts.has("Eyes"):
-		# The Ghost's eyes get their own material so one Ghost can glow brighter
-		# while it heals without every other Ghost glowing with it.
-		_eye_material = PaintKit.role_material("PK_AccentGlow", accent).duplicate() as StandardMaterial3D
-		(_parts["Eyes"] as GeometryInstance3D).material_override = _eye_material
-	return true
 
 
 ## The look of a TDM bot: from its lobby record when it has one, otherwise a
@@ -193,7 +214,10 @@ func _process(delta: float) -> void:
 	_fire_kick = move_toward(_fire_kick, 0.0, delta * 4.0)
 	_melee_kick = move_toward(_melee_kick, 0.0, delta * 2.5)
 	_glob_reload = move_toward(_glob_reload, 1.0, delta * 0.8)
-	var velocity: Vector3 = body.velocity
+	# Online players are moved by network updates, not by physics, so their
+	# body's own velocity stays zero; they carry the sender's velocity instead.
+	var synced = body.get("target_velocity")
+	var velocity: Vector3 = synced if synced is Vector3 else body.velocity
 	var speed := Vector2(velocity.x, velocity.z).length()
 	# 0 when standing, 1 at a brisk run. Drives stride size and bob.
 	var move := clampf(speed / 5.0, 0.0, 1.0)

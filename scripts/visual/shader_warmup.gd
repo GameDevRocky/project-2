@@ -30,11 +30,8 @@ func _ready() -> void:
 	var sphere := SphereMesh.new()
 	sphere.radial_segments = 6
 	sphere.rings = 3
-	var glob_mesh: Mesh = PaintKit.mesh("paint_glob", "Glob")
-	_add(glob_mesh if glob_mesh != null else sphere, Projectile.glob_material(Color.WHITE), null)
-	var splat_mesh: Mesh = PaintKit.mesh("paint_splat", "Splat_0")
-	_add(splat_mesh if splat_mesh != null else sphere, Projectile.splat_material(Color.WHITE), null)
-	_add(sphere, Projectile.puff_material(Color.WHITE), null)
+	_add(sphere, Projectile.glob_material(Color.WHITE), null)
+	_add(sphere, Projectile.trail_material_for(Color.WHITE), null)
 	_add(sphere, Projectile.burst_material(Color.WHITE), null)
 	var overlay := PaintKit.flash_overlay_material()
 	overlay.albedo_color.a = 0.5

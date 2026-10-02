@@ -147,7 +147,8 @@ func refresh(players: Array, scores: Dictionary, remaining: float) -> void:
 				var record: Dictionary = members[i]
 				row.set_record(i + 1, str(record.get("name", "Player")),
 					int(record.get("kills", 0)), int(record.get("deaths", 0)),
-					int(record.get("assists", 0)), str(record.get("id", "")) == "local",
+					int(record.get("assists", 0)),
+					bool(record.get("is_local", false)) or str(record.get("id", "")) == "local",
 					UITheme.team_color(team))
 			else:
 				row.set_empty(i + 1)

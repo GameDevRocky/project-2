@@ -50,6 +50,7 @@ var _clock: Label
 var _scoreboard
 var _respawn: Control
 var _respawn_label: Label
+var _feed: VBoxContainer
 var _result: Control
 var _last_ammo: float = -1.0
 var _shown_second: int = -1
@@ -83,6 +84,7 @@ func setup(controller, player, team: String) -> void:
 	_build_bottom_left()
 	_build_bottom_right()
 	_build_respawn_overlay()
+	_build_feed()
 	_scoreboard = ScoreboardScript.new()
 	_scoreboard.visible = false
 	_root.add_child(_scoreboard)
@@ -243,9 +245,55 @@ func _build_respawn_overlay() -> void:
 	column.add_child(_respawn_label)
 
 
+## Eliminations, newest at the bottom, in the top-right corner.
+func _build_feed() -> void:
+	_feed = VBoxContainer.new()
+	_feed.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_feed.add_theme_constant_override("separation", 4)
+	_feed.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
+	_feed.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+	_feed.offset_right = -SAFE_MARGIN
+	_feed.offset_top = SAFE_MARGIN
+	_root.add_child(_feed)
+
+
 # ============================================================================
 # LIVE UPDATES
 # ============================================================================
+
+## One line in the elimination feed: "ATTACKER  ✕  VICTIM", each name in its
+## team colour. Only the last FEED_LINES stay; each fades out after a while.
+const FEED_LINES := 4
+const FEED_SECONDS := 5.0
+
+func add_feed_entry(attacker: String, attacker_color: Color, victim: String, victim_color: Color) -> void:
+	if _feed == null:
+		return
+	var line := PanelContainer.new()
+	line.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	line.size_flags_horizontal = Control.SIZE_SHRINK_END
+	line.add_theme_stylebox_override("panel", UITheme.box(Color(0.05, 0.055, 0.09, 0.72),
+		Color(0, 0, 0, 0), 0, 6, 10.0, 3.0))
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	line.add_child(row)
+	for part in [[attacker, attacker_color], ["✕", UITheme.DIM], [victim, victim_color]]:
+		var label := Label.new()
+		label.theme_type_variation = &"HudCaption"
+		label.add_theme_font_size_override("font_size", 15)
+		label.text = str(part[0])
+		label.add_theme_color_override("font_color", part[1])
+		row.add_child(label)
+	_feed.add_child(line)
+	while _feed.get_child_count() > FEED_LINES:
+		var oldest := _feed.get_child(0)
+		_feed.remove_child(oldest)
+		oldest.queue_free()
+	var tween := line.create_tween()
+	tween.tween_interval(FEED_SECONDS)
+	tween.tween_property(line, "modulate:a", 0.0, 0.5)
+	tween.tween_callback(line.queue_free)
+
 
 func _on_stats_changed() -> void:
 	if _player == null or not is_instance_valid(_player):

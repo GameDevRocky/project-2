@@ -329,6 +329,13 @@ func set_wave(wave: int, total: int) -> void:
 	_wave_label.text = "WAVE %d / %d" % [wave, total]
 
 
+## Online Survival has no waves: the same pill shows the mode and how many
+## players are still standing.
+func set_status(title: String, caption: String) -> void:
+	_wave_label.text = title
+	_enemies_label.text = caption
+
+
 func set_enemies_left(count: int) -> void:
 	if count > 0:
 		_enemies_label.text = "%d REMAINING" % count

@@ -94,7 +94,7 @@ signal hit_confirmed
 @export var ammo_regen_delay: float = 0.6
 
 ## How fast your globs travel, in metres per second.
-@export var projectile_speed: float = 60.0
+@export var projectile_speed: float = 90.0
 
 ## How far the mouse turns you. Radians of turn per pixel of mouse movement.
 @export var mouse_sensitivity: float = 0.0022
@@ -523,7 +523,17 @@ func _shoot(_delta: float) -> void:
 	# the brush head at THAT point. The shot still visibly leaves the gun, but it
 	# goes where you are looking.
 	var aim: Vector3 = _aim_point()
-	glob.setup(_muzzle.global_position, aim - _muzzle.global_position, true)
+	var shot_origin := _muzzle.global_position
+	var shot_direction := (aim - shot_origin).normalized()
+	glob.setup(shot_origin, shot_direction, true)
+	if NetworkSession.is_in_match():
+		NetworkSession.report_shot(shot_origin, shot_direction, {
+			"damage": _damage,
+			"speed": projectile_speed,
+			"splash_radius": _splash_radius,
+			"splash_mult": _splash_mult,
+			"color": pair["color"],
+		})
 
 	_kick_view_model()
 	if _muzzle_puff != null:
@@ -583,7 +593,7 @@ func _regenerate(delta: float) -> void:
 
 	# _regen is 0 for every pair except Ghost, so this costs nothing to leave
 	# running for the other five.
-	if _regen > 0.0 and _since_hurt >= _regen_delay and health < max_health:
+	if not NetworkSession.is_in_match() and _regen > 0.0 and _since_hurt >= _regen_delay and health < max_health:
 		health = minf(max_health, health + _regen * delta)
 		stats_changed.emit()
 
@@ -747,6 +757,23 @@ func tdm_respawn(at: Vector3) -> void:
 	velocity = Vector3.ZERO
 	stats_changed.emit()
 	_set_mouse_captured(true)
+
+
+func apply_network_health(next_health: float) -> void:
+	var was_higher := next_health < health
+	health = clampf(next_health, 0.0, max_health)
+	if was_higher:
+		_since_hurt = 0.0
+		hurt.emit()
+	stats_changed.emit()
+	if health <= 0.0 and not _dead:
+		_dead = true
+		_set_mouse_captured(false)
+		died.emit()
+
+
+func network_pitch() -> float:
+	return _camera.rotation.x if is_instance_valid(_camera) else 0.0
 
 
 ## Called by game.gd between waves.

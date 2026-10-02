@@ -35,16 +35,19 @@ static var _suits: Dictionary = {}
 
 
 ## Builds a dressed runner. Returns null if the runner model is missing.
-static func build(customization: Dictionary, team: Color, fogless := true) -> Node3D:
+## `with_gun` false leaves the hands empty, for an online player whose gun is
+## carried separately so it can follow their aim (scripts/visual/remote_look.gd).
+static func build(customization: Dictionary, team: Color, fogless := true, with_gun := true) -> Node3D:
 	var runner := PaintKit.instance("canvas_runner")
 	if runner == null:
 		return null
-	dress(runner, customization, team, fogless)
+	dress(runner, customization, team, fogless, with_gun)
 	return runner
 
 
 ## Dresses a runner instance that is NOT yet wearing anything.
-static func dress(runner: Node3D, customization: Dictionary, team: Color, fogless := true) -> void:
+static func dress(runner: Node3D, customization: Dictionary, team: Color, fogless := true,
+		with_gun := true) -> void:
 	var skin := Data.skin_by_id(str(customization.get("skin", "default")))
 	var is_default := str(skin.get("id", "default")) == "default"
 
@@ -91,6 +94,8 @@ static func dress(runner: Node3D, customization: Dictionary, team: Color, fogles
 	_mount(runner, "Socket_Back", pack, team, fogless)
 
 	# --- 5. The Paint Blaster in the right hand, in the chosen gun skin --------
+	if not with_gun:
+		return
 	var gun := PaintKit.instance("paint_blaster_prop")
 	if gun != null:
 		_mount(runner, "Socket_Hand_R", gun, team, fogless)

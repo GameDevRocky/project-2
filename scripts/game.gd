@@ -104,50 +104,20 @@ var lobby_players: Array[Dictionary] = []
 
 
 func _ready() -> void:
-	# Seed the random number generator differently each launch, so strafe
-	# directions and spawn angles are not identical every run.
 	randomize()
-
-	# get_cmdline_user_args() returns only the arguments after a bare "--", so
-	# these cannot be confused with the engine's own flags.
 	var flags: PackedStringArray = OS.get_cmdline_user_args()
 	_verbose = flags.has("--verbose") or flags.has("--autoplay")
-
 	_ensure_input_actions()
-
+	if not NetworkSession.is_in_match():
+		get_tree().change_scene_to_file("res://scenes/main.tscn")
+		return
 	_build_arena()
 	_build_player()
-	_build_healing_station()
-	if game_mode == "TEAM_DEATH_MATCH":
-		var controller := Node.new()
-		controller.name = "TDMMatchController"
-		controller.set_script(TDMControllerScript)
-		add_child(controller)
-		controller.start_match(self, _player, lobby_players, session_team)
-		return
-	_build_hud()
-
-	# Wait one frame before starting. _ready() runs while nodes are still being
-	# added to the tree, and the enemies about to spawn need to be able to find
-	# the player by group - which only works once the player is fully in.
-	# await pauses this function and resumes it when the signal fires.
-	await get_tree().process_frame
-
-	# Development only: a fake player, so a headless run can exercise shooting,
-	# killing and inheriting instead of just standing still. Never created in a
-	# normal play session - see tools/autoplay.gd.
-	if flags.has("--autoplay"):
-		var harness := Node.new()
-		harness.set_script(load("res://tools/autoplay.gd"))
-		add_child(harness)
-
-	_log("run started")
-	_player.pair_inherited.connect(func(pair): _log("inherited %s" % pair["name"]))
-
-	_hud.announce("PROJECT 2", "Hunt. Inherit. Overwrite.")
-	await get_tree().create_timer(2.2).timeout
-
-	_start_wave()
+	var controller := Node.new()
+	controller.name = "OnlineMatchController"
+	controller.set_script(TDMControllerScript)
+	add_child(controller)
+	controller.start_match(self, _player, lobby_players, session_team)
 
 
 ## Prints only when a verbose flag was passed, so a normal run stays silent.
@@ -221,7 +191,8 @@ func _build_player() -> void:
 
 	# Listen for the player's death. A signal connection is how this script
 	# finds out without having to check the player's health every frame.
-	if game_mode == "SURVIVAL":
+	# Offline Survival only. An online match's controller handles deaths itself.
+	if game_mode == "SURVIVAL" and not NetworkSession.is_in_match():
 		_player.died.connect(_on_player_died)
 
 
@@ -411,7 +382,9 @@ func _on_wave_cleared() -> void:
 # ============================================================================
 
 func _process(_delta: float) -> void:
-	if game_mode != "SURVIVAL":
+	# The wave/core logic below belongs to offline Survival, which has its own
+	# HUD. An online match never builds that HUD (_hud stays null), so skip it.
+	if game_mode != "SURVIVAL" or _hud == null:
 		return
 	if _run_over:
 		# Allow a restart from the end screen.
